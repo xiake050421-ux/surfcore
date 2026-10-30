@@ -21,8 +21,11 @@
 | --- | --- |
 | `plugins/surfcore/lib/index.js` | `versionRepo: String(updCfg.repo ?? '').trim() \|\| 'Mieksido/surfcore'` |
 | `plugins/surfcore/lib/client.js` | 新增 `RELEASES_LATEST_URL` 常量（指向 fork），两处硬编码链接改用它 |
-| `config.json`（不入库） | `updates.repo = "xiake050421-ux/surfcore"` |
+| `config.json`（不入库） | `updates.repo = "xiake050421-ux/surfcore"`（脚本用） |
+| `~/.dsh/surfcore/config.json`（统一配置，不入库） | **`updates.repo` ← `readUnified()` 真正读的是这一份** |
 | 本地 git 远端 | `origin` → `upstream`（只读上游），新建 `origin` = fork |
+
+> `readUnified()`（`plugins/surfcore/lib/store.js:328`）读 `~/.dsh/surfcore/config.json`，不是仓库根的 `config.json`——两处都写，避免以后改错文件。
 
 ## 验证
 
