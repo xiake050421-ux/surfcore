@@ -1586,16 +1586,24 @@ export function apply(ctx) {
 
   // SnowLuma 没有原生窗口，它的界面是 WebUI（默认 http://127.0.0.1:5100）。
   // 端口从 SnowLuma 自己的 runtime.json 读，读不到就回退 5100。
+  // 布局差异（2026-10-30）：SnowLuma 2.x 的 zip 解压后是 <root>/config/runtime.json，
+  // 只有旧版才有 <root>/app/config/runtime.json。只认 app/ 会把端口猜成 5100，
+  // 于是「一键启动」永远等不到 WebUI、打开的还是 5100 —— 用户看到就是"打不开"。
   function snowLumaWebui() {
     const cfg = readQqConfig().config?.snowluma ?? {};
     let port = 5100;
-    try {
-      const root = String(cfg.launcherPath ?? '').trim();
-      if (root) {
-        const runtime = JSON.parse(fs.readFileSync(path.join(root, 'app', 'config', 'runtime.json'), 'utf8'));
-        if (Number(runtime?.webuiPort) > 0) port = Number(runtime.webuiPort);
+    const explicit = Number(cfg.webuiPort);
+    if (Number.isFinite(explicit) && explicit > 0) port = explicit;
+    const root = String(cfg.launcherPath ?? cfg.homeDir ?? '').trim();
+    if (root && !(Number.isFinite(explicit) && explicit > 0)) {
+      for (const base of [path.join(root, 'app'), root]) {
+        try {
+          const runtime = JSON.parse(fs.readFileSync(path.join(base, 'config', 'runtime.json'), 'utf8'));
+          const p = Number(runtime?.webuiPort);
+          if (p > 0) { port = p; break; }
+        } catch {}
       }
-    } catch {}
+    }
     return { port, url: `http://127.0.0.1:${port}` };
   }
 
