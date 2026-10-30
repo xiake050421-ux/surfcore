@@ -313,6 +313,45 @@ export function apply(ctx) {
     pluginLog('token 用量采集监听注册失败：', String(error?.message ?? error));
   }
 
+  // ── 桌宠提醒：DSH 需要你确认（授权 / 提问）时，让小鲸鱼冒个气泡 ──
+  // 机制：桌宠长轮询 /pet-api/events，收到 type=reply 的事件就会 showBubble。
+  // 所以这里把「等待确认」转成一条 reply 事件推给它，不需要改桌宠应用本身。
+  let petAlertOff = null;
+  try {
+    if (typeof ctx.on === 'function' && petChat && typeof petChat.emit === 'function') {
+      const lastAlert = { kind: '', at: 0 };
+      const sessionLabel = (session) => {
+        try {
+          const titled = typeof ctx.get === 'function' ? ctx.get('sessionTitle')?.get?.(session) : null;
+          const name = String(titled?.title ?? titled ?? session?.title ?? '').trim();
+          return name.slice(0, 40);
+        } catch { return ''; }
+      };
+      const alert = (kind, session) => {
+        try {
+          const now = Date.now();
+          // 同一类提醒 20 秒内只冒一次，避免一个回合里连弹好几个气泡
+          if (lastAlert.kind === kind && now - lastAlert.at < 20_000) return;
+          const who = sessionLabel(session);
+          const text = (kind === 'approval' ? '⚠ 需要你确认权限' : '⚠ 需要你回答一下') + (who ? `（${who}）` : '');
+          petChat.emit({ type: 'reply', text, modality: 'text', messageId: `pet-alert-${kind}-${now}` });
+          lastAlert.kind = kind;
+          lastAlert.at = now;
+        } catch {}
+      };
+      petAlertOff = ctx.on('session/event', (session, event) => {
+        try {
+          const type = String(event?.type || '');
+          const data = event?.data || {};
+          if (type === 'approval/asked') alert('approval', session);
+          else if (type === 'tool/call' && String(data?.name || '') === 'ask_user_question') alert('question', session);
+        } catch {}
+      });
+    }
+  } catch (error) {
+    pluginLog('桌宠提醒监听注册失败：', String(error?.message ?? error));
+  }
+
   // 启动时先重建身份对齐提示块（bridge 与 B站调度器都读它）。
   try { writeAlignmentBriefs(); } catch (error) { pluginLog('启动时写对齐简报失败：', error?.message ?? error); }
 
@@ -2790,6 +2829,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output 
     try { petPurpose.stop?.(); } catch {}
     if (petHostTimer) clearInterval(petHostTimer);
     try { sessionEventOff?.(); } catch {}
+    try { petAlertOff?.(); } catch {}
     try { tokenBudget.dispose(); } catch {}
     try { memoryCardTimer?.stop?.(); } catch {}
     try { closeAllQrLogins(); } catch {}
