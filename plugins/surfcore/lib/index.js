@@ -256,7 +256,7 @@ export function apply(ctx) {
       const list = [];
       const updCfg = readUnified().config?.updates ?? {};
       // 1) SurfCore 本体：源码树，走 git
-      list.push({ id: 'surfcore', name: 'SurfCore 本体', dir: QQBOT_ROOT, kind: 'git', branch: 'main', versionRepo: 'Mieksido/surfcore' });
+      list.push({ id: 'surfcore', name: 'SurfCore 本体', dir: QQBOT_ROOT, kind: 'git', branch: 'main', versionRepo: String(updCfg.repo ?? '').trim() || 'Mieksido/surfcore' });
       // 2) 语音包（bridge 管理的安装目录；config.json 的 voicePacks.dir 可覆盖）
       //    是 git clone 就走 git；不是则看有没有配版本清单（updates.voice.*VersionUrl）
       try {

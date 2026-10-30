@@ -29,6 +29,9 @@ window.__ModuleLoader__.load({
 
   // 原生「浏览」：浏览器拿不到绝对路径，交给宿主进程弹 Windows 对话框。
   // 统一进度条：所有安装入口都用它（用户要求"每个安装都要能明显看到进度"）。
+  // 更新来源（2026-10-30 用户改用 fork 发布：上游 Mieksido/surfcore 没有写权限）。
+  // 服务端组件清单的 versionRepo 由 config.json 的 updates.repo 决定，这里只兜底「手动下载」链接。
+  const RELEASES_LATEST_URL = "https://github.com/xiake050421-ux/surfcore/releases/latest";
   function ProgressBar({ pct = 0, phase = "", err = "", indeterminate = false, style = {} }) {
     const v = Math.max(0, Math.min(100, Number(pct) || 0));
     return h("div", { style: { marginTop: "8px", ...style } },
@@ -1354,7 +1357,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
                   toast("✓ 诊断信息已复制");
                 } catch (e) { toast(`✗ 复制失败：${e.message}`); }
               } }, "复制诊断"),
-              h(Btn, { kind: "qbw-btn2", onClick: () => window.open("https://github.com/Mieksido/surfcore/releases/latest", "_blank", "noopener") }, "去下载新版")));
+              h(Btn, { kind: "qbw-btn2", onClick: () => window.open(RELEASES_LATEST_URL, "_blank", "noopener") }, "去下载新版")));
           })(),
           working ? h(ProgressBar, { phase: "正在下载/应用更新…", indeterminate: true }) : null),
           h("div", { className: "qbw-actions", style: { flexShrink: 0, paddingTop: "10px" } },
@@ -1801,7 +1804,7 @@ F("toolsPath", "bili.mjs 路径", "留空 = 用合体插件自带的 tools/", "t
                   },
                 }, busy === "apply-update" ? "更新中…" : `立即更新（${(updates.pending ?? []).length}）`)
                   : (updates.lastApply?.deterministic
-                    ? h(Btn, { onClick: () => window.open("https://github.com/Mieksido/surfcore/releases/latest", "_blank", "noopener") },
+                    ? h(Btn, { onClick: () => window.open(RELEASES_LATEST_URL, "_blank", "noopener") },
                       "此版本无法自动更新：手动下载")
                     : null),
               h(Btn, { kind: "qbw-btn2", onClick: () => setUpdateOpen(true), disabled: !(updates.results ?? []).length }, "查看详情"))),
