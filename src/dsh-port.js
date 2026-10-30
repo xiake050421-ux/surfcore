@@ -86,3 +86,31 @@ export async function probeDshBaseUrl(baseUrl, timeoutMs = 2000) {
 export function isLoopbackBaseUrl(baseUrl) {
   return /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?(\/|$)/i.test(String(baseUrl ?? '').trim());
 }
+
+/**
+ * 端口守护的判定（纯函数，方便单测）：DSH 换端口后旧地址会一直探不通。
+ *
+ * 连续两轮探不通才认定换端口——一次抖动（DSH 正忙/短暂重启）不该触发重连。
+ *
+ * @param input.current - 正在用的 DSH 地址
+ * @param input.misses - 之前已经连续探不通的轮数
+ * @param input.probe - 探活函数（默认 {@link probeDshBaseUrl}）
+ * @param input.discover - 发现函数（默认 {@link discoverDshBaseUrl}）
+ * @returns action: stay=还活着（misses 归零）；wait=再等一轮；move=换到 next；lost=探不到也没找到
+ */
+export async function planDshPortMove({
+  current,
+  misses = 0,
+  probe = probeDshBaseUrl,
+  discover = discoverDshBaseUrl
+} = {}) {
+  if (await probe(current)) return { action: 'stay', misses: 0 };
+  const nextMisses = misses + 1;
+  if (nextMisses < 2) return { action: 'wait', misses: nextMisses };
+  const found = await discover();
+  if (!found) return { action: 'lost', misses: nextMisses };
+  const norm = (u) => String(u ?? '').trim().replace(/\/+$/, '');
+  if (norm(found) === norm(current)) return { action: 'wait', misses: nextMisses };
+  return { action: 'move', misses: 0, next: found };
+}
+

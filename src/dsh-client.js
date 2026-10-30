@@ -326,6 +326,27 @@ export class NodeApiClient extends AbstractApiClient {
     return this.baseUrl;
   }
 
+  /**
+   * DSH 桌面端每次重启都换回环端口：把客户端指到新地址，并**踢掉当前事件流**，
+   * 让上层的 pumpMux 立刻用新地址重连（否则旧 socket 仍然"连着"，只是再也没有事件）。
+   *
+   * @param next - 新的 DSH 基址（如 http://127.0.0.1:5000）
+   * @returns 地址是否真的变了
+   */
+  moveToBaseUrl(next) {
+    const target = String(next ?? '').replace(/\/+$/, '');
+    if (!target || target === this.baseUrl) return false;
+    this.baseUrl = target;
+    // 换端口后旧 Cookie 的 authority 已经对不上，必须重铸。
+    this.invalidateAuth();
+    try {
+      this._closeMux?.();
+    } catch (error) {
+      console.error('[dsh-client] close mux after base change failed:', error?.message ?? error);
+    }
+    return true;
+  }
+
   /** 使当前 Cookie/launch token 失效；DSH 重启或 401 后会自动重新发现最新 token。 */
   invalidateAuth() {
     this._authEpoch += 1;
@@ -690,6 +711,14 @@ export class NodeApiClient extends AbstractApiClient {
     const url = new URL('/api/remote.mux', this.baseUrl);
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
     const socket = new WebSocket(url, { headers: { cookie: this.cookie } });
+    // moveToBaseUrl() 用它在换端口时主动关掉这条流；关闭后由上层退避重连。
+    this._closeMux = () => {
+      try {
+        socket.close();
+      } catch {
+        /* 已经关了 */
+      }
+    };
     const inbox = [];
     let wake;
     let socketOpen = false;

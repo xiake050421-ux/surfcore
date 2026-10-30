@@ -26,7 +26,7 @@ import {
   selectMissedHistory, summarizeHistoryCatchup,
 } from './history-catchup.js';
 import { safeFetchBuffer, looksLikeImageBuffer } from './safe-fetch.js';
-import { discoverDshBaseUrl, isLoopbackBaseUrl, probeDshBaseUrl } from './dsh-port.js';
+import { discoverDshBaseUrl, isLoopbackBaseUrl, planDshPortMove, probeDshBaseUrl } from './dsh-port.js';
 import { AUDIO_EXTS, cleanupTemp, describeAudio, inspectAudio, listAudioFiles, parseTargetKey, processAudioVolume, resolveAudioProcessing, resolveAudioSource, safeJoinLibrary } from './send-voice-lib.js';
 import { createVoicePacks } from './voice-packs.js';
 import { ImportError } from './voice-pack-import.js';
@@ -3183,6 +3183,44 @@ async function main() {
     // 默认只允许把 launch token 交给回环地址；远程 DSH 需要显式 opt-in（见 dsh-client.ensureAuth）。
     allowRemote: cfg.dsh.allowRemote === true
   });
+
+  // DSH 端口守护
+  //
+  // DSH 桌面端每次重启都换回环端口（见过 11850 → 2475 → 4385 → 3899 → 1371），而桥接
+  // 只在启动时探一次地址。端口变了以后旧 socket 仍然「连着」，只是再也没有事件：
+  // 表现是 QQ 里已读不回、日志里 `回合完成但无文本` 甚至什么都不打。这里每 60 秒复核一
+  // 次回环地址，连续两轮探不通才认定换端口（一次抖动不重连），切过去并踢掉事件流让它重连。
+  let dshPortWatchMisses = 0;
+  const dshPortWatchTimer = setInterval(() => {
+    void (async () => {
+      // 由 DSH 拉起（带 DSH_WEB_URL）或连远程 DSH 时，地址不是我们能改的。
+      if (String(process.env.DSH_WEB_URL ?? '').trim()) return;
+      if (!isLoopbackBaseUrl(api.baseUrl)) return;
+      try {
+        const plan = await planDshPortMove({ current: api.baseUrl, misses: dshPortWatchMisses });
+        dshPortWatchMisses = plan.misses;
+        if (plan.action === 'lost') {
+          log(`⚠️ DSH 端口守护：${api.baseUrl} 连续 ${plan.misses} 轮探不通，也没找到正在运行的 DSH`);
+          return;
+        }
+        if (plan.action !== 'move') return;
+        const previous = api.baseUrl;
+        if (!api.moveToBaseUrl(plan.next)) return;
+        cfg.dsh.baseUrl = plan.next;
+        log(`🔄 DSH 端口守护：${previous} → ${plan.next}，已切换地址并重启事件流`);
+        try {
+          const raw = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8'));
+          raw.dsh = { ...(raw.dsh ?? {}), baseUrl: plan.next };
+          fs.writeFileSync(path.join(ROOT, 'config.json'), `${JSON.stringify(raw, null, 2)}\n`);
+        } catch (error) {
+          log(`DSH 端口守护：写回 config.json 失败（不影响本次运行）：${error?.message ?? error}`);
+        }
+      } catch (error) {
+        log(`DSH 端口守护出错（忽略本轮）：${error?.message ?? error}`);
+      }
+    })();
+  }, 60_000);
+  dshPortWatchTimer.unref?.();
   // DSH 的模型目录 RPC：0.1.5 是 `session/modelCatalog`。**不能走基类门面**
   // `api.sessions.modelCatalog` —— 桥接钉住的 `@deepseek-ai/dsh-host-apiproxy@0.1.1-rc.2`
   // 的 sessions 门面里根本没有这个方法（只有 `models` → 已下线的 `session/models`），
