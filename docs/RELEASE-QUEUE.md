@@ -329,4 +329,10 @@
 
 ## 已发布
 
-（空）
+### v0.8.0 · 2026-10-30 21:09（已发布到 fork）
+- 覆盖提交：`1ad2042`(v0.7.0) 合并上游 `bc851a9`(v0.7.19) 后的 `39ce59e`、清单 `d888efd`
+- 内容：QQ 端 DSH 任务通道、每日 60 秒日报、桌宠权限提醒、DSH 端口守护；修 blocked 静默、SnowLuma 2.x 一键启动、Token 防爆破额度
+- 发布位置：`https://github.com/xiake050421-ux/surfcore/releases/tag/v0.8.0`（上游 `Mieksido/surfcore` 无写权限，按用户要求 fork 发布）
+- 门禁：清单 506 文件 `问题 0 个`；`npm run test:audit` 88/88；归档解压校验 `ok 506 | 不符 0 | 缺失 0`
+- 待办：客户端更新源仍指向上游仓库，是否切到 fork 待用户决定
+
