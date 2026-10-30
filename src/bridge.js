@@ -3392,6 +3392,11 @@ async function main() {
   const QUEUE_MAX = 50;
   const QUEUE_HINT_COOLDOWN_MS = 30_000;
   const queueRetries = new Map(); // key -> 连续补投失败次数（用于退避/暂停恢复）
+  // DSH 的 pre-step 闸门会直接 reject（回合 ended.reason.kind === 'blocked'，无任何输出）。
+  // 最常见原因是会话被 DSH 侧归档（ArchivedSessionGate）或目标轮次状态失效：这种会话
+  // 之后每条消息都会被静默吞掉。所以记住最后一次投递内容，拦截时就地重建会话并重投。
+  const lastPromptByKey = new Map(); // key -> { promptText, media }
+  const blockedRetries = new Map(); // key -> 连续被拦截次数
 
   // reset 竞态导致 ensureSession 抛「会话创建期间已重置」时，把消息放回队列稍后重试。
   // 已在队列中的相同文本不重复入队。
@@ -11565,6 +11570,7 @@ async function main() {
     let sessionId;
     try {
       sessionId = await ensureSession(key);
+      lastPromptByKey.set(key, { promptText, media: opts.media ?? [] });
     } catch (error) {
       if (String(error?.message ?? error).includes('会话创建期间已重置')) {
         enqueueForRetry(key, promptText, opts);
@@ -14979,7 +14985,24 @@ async function main() {
                   }
                 }
               } else if (!ended.text.trim()) {
+                if (ended.reason.kind === 'blocked') {
+                  // pre-step 闸门 reject：这一轮的消息被丢弃、模型一次都没跑。
+                  // 会话自身已不可用（归档 / 轮次状态失效），必须退役并重建，否则后面每条都被吞。
+                  const last = lastPromptByKey.get(key);
+                  const attempt = (blockedRetries.get(key) ?? 0) + 1;
+                  blockedRetries.set(key, attempt);
+                  log(`⚠️ 回合被 DSH 闸门拦截（blocked）无输出 (${key})，第 ${attempt} 次：退役会话并重建`);
+                  appendActivity(`${key} 回合被 DSH 拦截（blocked），重建会话`);
+                  retireSession(key);
+                  if (last && attempt <= 2) {
+                    enqueueForRetry(key, last.promptText, { media: last.media ?? [], wakeReason: 'blocked-retry' });
+                  } else if (attempt > 2) {
+                    log(`⚠️ ${key} 连续 ${attempt} 次被拦截，停止自动重投`);
+                  }
+                  continue;
+                }
                 // completed 但没文本（纯工具调用回合）
+                blockedRetries.delete(key);
                 log(`回合完成但无文本 (${key})`);
                 if (isFarewell) {
                   const st = socialState(key);
