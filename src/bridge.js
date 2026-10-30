@@ -870,6 +870,17 @@ function loadConfig() {
       longGapMaxMs: 5000,             // 长间隔上限（当前控制台保存值）
       ...(file.social ?? {})
     },
+    // 定时播报（目前只有每日「60秒读懂世界」）：到点由桥接自己发，不依赖 AI 醒着。
+    schedule: {
+      dailyNews: {
+        enabled: false,
+        time: '12:00',
+        groupId: '',
+        itemCount: 10,
+        timeoutMs: 300000,
+        ...(file.schedule?.dailyNews ?? {})
+      }
+    },
     socialV2: {
       enabled: true,
       autoReplyCheckMs: 30000,
@@ -2696,6 +2707,197 @@ async function main() {
       learnerWaiters.set(sessionId, arr);
     });
   }
+
+  // ── 主人专用：把一句话任务交给独立的 DSH worker 会话真正执行 ───────────────
+  //
+  // 为什么需要它：qq-chat-v2 preset 在**注册期**就把本地执行/文件工具剔掉了（铁律 L7），
+  // 聊天会话永远不可能自己去跑命令。所以「QQ 上让大肥鱼操作电脑」只能走这条路：
+  // 在 DSH 里另开一个**静默 worker 会话**（独立 workspace + 完整预设），把任务交给它，
+  // 等这一轮跑完，把它的结论带回聊天会话。
+  //
+  // 静默会话复用黑话学习那套收集器（learnerSessions / learnerWaiters / learnerCollectors）：
+  // 它们只收 turn、不映射 QQ、不发消息 —— 正是 worker 需要的行为，且不必再复制一份
+  // 事件分发的 if/else（那段在 pumpMux 里，改错会让所有会话静默失效）。
+  let dshTaskSessionId = null;
+  let dshTaskBusy = false;
+
+  async function ensureDshTaskSession() {
+    if (dshTaskSessionId) return dshTaskSessionId;
+    const preset = String(cfg.dsh?.taskPreset ?? 'standard');
+    const dir = path.join(STATE_DIR, 'dsh-task-workspace');
+    fs.mkdirSync(dir, { recursive: true });
+    const wsValue = unwrap(await api.workspace.create({ path: dir }), 'dsh-task workspace.create');
+    const value = unwrap(await api.sessions.create({ workspaceId: wsValue.workspace.workspaceId, agentPreset: preset }), 'dsh-task session.create');
+    dshTaskSessionId = value.sessionId;
+    learnerSessions.add(dshTaskSessionId);
+    api.events.follow(dshTaskSessionId);
+    log(`DSH 任务会话已创建：${dshTaskSessionId}（preset=${preset}）`);
+    return dshTaskSessionId;
+  }
+
+  /**
+   * 把一条任务交给 worker 会话并等它收尾。**不做权限判定**，调用方负责（QQ 工具走 runDshTask，
+   * 定时播报走 runDailyNews）。失败一律 throw，让调用方决定怎么呈现。
+   * @returns {Promise<string>} worker 的文字结论
+   */
+  async function runDshWorker(instruction, timeoutMs = 180000) {
+    const text = String(instruction ?? '').trim();
+    if (!text) throw new Error('任务内容是空的');
+    if (!dshReady) throw new Error('DSH 现在没就绪');
+    const sessionId = await ensureDshTaskSession();
+    // 必须在**每次**发任务前重新登记：pumpMux 的 learner 分支在 turn 结束后会
+    // `learnerSessions.delete(sessionId)`（它假设学习会话用完即弃），worker 会话是复用的，
+    // 不重新登记就等于第二条任务之后再也收不到 turn/end —— 实测会一直等到超时。
+    learnerSessions.add(sessionId);
+    const promptText = [
+      '【来自 QQ 的一次性任务】主人通过 QQ 把这件事交给机器人转给你执行。',
+      `任务：${text}`,
+      '要求：直接动手做完（该查就查、该改就改，需要就自己重试）；完成后用 2~4 句中文说明「实际做了什么、结果是什么」；失败就说明失败在哪一步、下一步该怎么办。不要输出 Markdown，不要贴长代码。'
+    ].join('\n');
+    const accepted = await api.sessions.prompt({ sessionId, mode: 'queue', content: [{ type: 'text', text: promptText }] });
+    if (!accepted.result.ok) {
+      const code = String(accepted.result.error?.code ?? '');
+      const message = String(accepted.result.error?.message ?? '');
+      if (/not[- ]?found/i.test(`${code} ${message}`)) {
+        learnerSessions.delete(dshTaskSessionId);
+        dshTaskSessionId = null;
+      }
+      throw new Error(`DSH 拒了这个任务：${code || message || '未知原因'}`);
+    }
+    const budget = Math.min(600000, Math.max(30000, Number(timeoutMs) || 180000));
+    const output = await waitLearnerTurn(sessionId, budget);
+    return String(output ?? '').trim();
+  }
+
+  /**
+   * @returns {Promise<{ok:boolean, status?:string, result?:string, code?:string, error?:string, hint?:string}>}
+   */
+  async function runDshTask({ key, instruction, timeoutMs }) {
+    const owner = String(cfg.ownerQQ ?? '').trim();
+    if (!owner) return { ok: false, code: 'no-owner', error: '还没有设置主人 QQ（ownerQQ），这个能力不可用', hint: '在设置 → SurfCore → 主人里填 QQ 号' };
+    // 只认主人的私聊：群里任何人的一句话都可能被模型当任务转过来，
+    // 必须在**桥接这一侧**按真实会话 key 判定，不能相信模型自己说的"这是主人"。
+    if (key !== `private:${owner}`) {
+      return { ok: false, code: 'not-owner', error: '这个工具只在主人的私聊里可用', hint: '让主人私聊我再说这件事' };
+    }
+    if (!dshReady) return { ok: false, code: 'dsh-offline', error: 'DSH 现在没就绪，干活的那一端没连上', hint: '把 DeepSeek Harness 打开后再说一次' };
+    const text = String(instruction ?? '').trim();
+    if (!text) return { ok: false, code: 'empty', error: '任务内容是空的', hint: '说说具体要我做什么' };
+    if (dshTaskBusy) return { ok: false, code: 'busy', error: '上一条电脑任务还在跑', hint: '等我这一条做完再问' };
+
+    dshTaskBusy = true;
+    try {
+      const output = await runDshWorker(text, timeoutMs);
+      const limit = Math.max(200, Number(cfg.socialV2?.task?.maxResultChars ?? 1200));
+      const trimmed = output.slice(0, limit);
+      log(`DSH 任务完成（${text.slice(0, 40)}…）`);
+      return { ok: true, status: 'done', result: trimmed || '（做完了，但没给文字结论）' };
+    } catch (error) {
+      const message = String(error?.message ?? error);
+      log(`DSH 任务失败：${message}`);
+      const timeout = /超时/.test(message);
+      // 内部措辞（「等待学习会话 turn 超时」）对 QQ 用户没有意义，换成能看懂的句子。
+      const friendly = timeout ? '执行端一直没回话，等到超时了' : message;
+      return { ok: false, code: timeout ? 'timeout' : 'error', error: `任务没跑完：${friendly}`, hint: timeout ? '这事比一次能做的重，拆小一点再说' : '过一会儿再试一次' };
+    } finally {
+      dshTaskBusy = false;
+    }
+  }
+
+  // ── 定时播报：每天固定时间把当天的「60秒读懂世界」发到群里 ────────────────
+  //
+  // 为什么由桥接发而不是让 AI 自己发：定时任务必须「到点准发、不依赖 AI 当时醒没醒」。
+  // 桥接本来就有 OneBot 长连接与 QQ 白名单，定时器 + 一次 worker 检索就能闭环，
+  // 也不需要为此让聊天会话拿到发送权限（那会破坏 L7 的工具边界）。
+  const SCHEDULE_STATE_FILE = path.join(STATE_DIR, 'schedule-state.json');
+  function pad2(n) { return String(n).padStart(2, '0'); }
+  function localDateKey(d = new Date()) { return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; }
+  function readScheduleState() {
+    try { return JSON.parse(fs.readFileSync(SCHEDULE_STATE_FILE, 'utf8')); } catch { return {}; }
+  }
+  function writeScheduleState(state) {
+    try {
+      fs.mkdirSync(STATE_DIR, { recursive: true });
+      fs.writeFileSync(SCHEDULE_STATE_FILE, JSON.stringify(state, null, 2));
+    } catch (error) {
+      log('定时状态写入失败:', error?.message ?? error);
+    }
+  }
+
+  async function runDailyNews({ force = false } = {}) {
+    const conf = cfg.schedule?.dailyNews ?? {};
+    if (conf.enabled === false) return { ok: false, code: 'disabled', error: '定时新闻没开启', hint: '把 config.json 的 schedule.dailyNews.enabled 设为 true' };
+    const groupId = String(conf.groupId ?? '').trim();
+    if (!/^\d+$/.test(groupId)) return { ok: false, code: 'no-group', error: '没配群号（schedule.dailyNews.groupId）', hint: '填一个群号' };
+    if (!dshReady) return { ok: false, code: 'dsh-offline', error: 'DSH 没就绪，生成不了日报', hint: '把 DSH 打开' };
+    const dateKey = localDateKey();
+    if (!force && readScheduleState().dailyNewsDate === dateKey) {
+      return { ok: false, code: 'already', error: `今天（${dateKey}）已经发过了` };
+    }
+    const count = Math.max(3, Math.min(20, Number(conf.itemCount ?? 10)));
+    const instruction = [
+      `联网搜索今天（${dateKey}）的「60秒读懂世界」每日新闻简报，取最新一期的要点。`,
+      `只输出 ${count} 条以内新闻要点，每条一行、以「1、」这样的数字开头，保留原文数字与措辞，`,
+      '纯文本：不要标题、不要链接、不要图片、不要表情、不要解释你做了什么。',
+      '如果搜不到当期，只输出「搜不到」三个字。'
+    ].join('');
+    log(`定时新闻：开始生成 ${dateKey} 的内容`);
+    try {
+      const output = await runDshWorker(instruction, Number(conf.timeoutMs ?? 300000));
+      if (/搜不到|找不到|无法获取/.test(output.slice(0, 40))) throw new Error('没搜到当期内容');
+      const lines = output.split('\n').map((l) => l.trim()).filter((l) => /^\d+[、.．)）]/.test(l));
+      const body = (lines.length ? lines : output.split('\n').map((l) => l.trim()).filter(Boolean)).slice(0, count).join('\n');
+      if (!body) throw new Error('worker 返回了空内容');
+      const payload = `【60秒读懂世界】${dateKey}\n\n${body}`.slice(0, 1800);
+      const sent = await onebotSend('group', Number(groupId), payload, null, null);
+      const state = readScheduleState();
+      state.dailyNewsDate = dateKey;
+      state.dailyNewsAt = new Date().toISOString();
+      state.dailyNewsMessageId = sent?.message_id ?? null;
+      writeScheduleState(state);
+      log(`定时新闻：已发到群 ${groupId}（${body.split('\n').length} 条）`);
+      return { ok: true, date: dateKey, groupId, messageId: state.dailyNewsMessageId, sent: payload };
+    } catch (error) {
+      const message = String(error?.message ?? error);
+      log(`定时新闻失败：${message}`);
+      // 失败退避：每 30 秒重试一次会在两小时窗口里烧掉两百次调用，这里改成 10 分钟一次、每天最多 6 次。
+      try {
+        const st = readScheduleState();
+        st.dailyNewsLastErrorAt = new Date().toISOString();
+        const today = localDateKey();
+        st.dailyNewsAttemptDate = st.dailyNewsAttemptDate === today ? st.dailyNewsAttemptDate : today;
+        st.dailyNewsAttempts = st.dailyNewsAttemptDate === today ? Number(st.dailyNewsAttempts ?? 0) + 1 : 1;
+        writeScheduleState(st);
+      } catch { /* 状态写不了不影响主流程 */ }
+      return { ok: false, code: /超时/.test(message) ? 'timeout' : 'error', error: `日报没发出去：${message}`, hint: '10 分钟后会自动重试；也可以手动触发一次' };
+    }
+  }
+
+  function dailyNewsTick() {
+    try {
+      const conf = cfg.schedule?.dailyNews ?? {};
+      if (conf.enabled === false) return;
+      const [hh, mm] = String(conf.time ?? '12:00').split(':').map(Number);
+      if (!Number.isFinite(hh) || !Number.isFinite(mm)) return;
+      const now = new Date();
+      const target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh, mm, 0, 0);
+      const lag = now.getTime() - target.getTime();
+      // 还没到点 → 等；超过 2 小时（比如晚上才开机）→ 不补发，免得半夜把旧日报刷进群。
+      if (lag < 0 || lag > 2 * 3600 * 1000) return;
+      const st = readScheduleState();
+      if (st.dailyNewsDate === localDateKey()) return;
+      // 失败退避：10 分钟内不重试，单日最多试 6 次（每次都会起一个 worker 会话，要花钱）。
+      const lastErr = Date.parse(st.dailyNewsLastErrorAt ?? '');
+      if (Number.isFinite(lastErr) && Date.now() - lastErr < 10 * 60 * 1000) return;
+      if (st.dailyNewsAttemptDate === localDateKey() && Number(st.dailyNewsAttempts ?? 0) >= 6) return;
+      runDailyNews().catch((error) => log('定时新闻异常:', error?.message ?? error));
+    } catch (error) {
+      log('定时检查失败:', error?.message ?? error);
+    }
+  }
+  setInterval(dailyNewsTick, 30000);
+  log(`定时新闻：${cfg.schedule?.dailyNews?.enabled === false ? '已关闭' : `每天 ${cfg.schedule?.dailyNews?.time ?? '12:00'} 发到群 ${cfg.schedule?.dailyNews?.groupId ?? '(未配置)'}`}`);
+
 
   async function runSlangExtraction(key) {
     if (cfg.slang?.enabled === false) return;
@@ -5875,6 +6077,26 @@ async function main() {
             });
           }
           sendJson({ ok: true, conversations: list });
+          return;
+        }
+        // 主人专用：把 QQ 上的一句话交给 DSH worker 会话执行（详见 runDshTask）。
+        // 权限判定在 runDshTask 里按「会话 key 是不是主人的私聊」做，模型说了不算。
+        if (req.method === 'POST' && url.pathname === '/api/schedule/run') {
+          const body = await readBody();
+          const job = String(body.job ?? 'dailyNews').trim() || 'dailyNews';
+          if (job !== 'dailyNews') { sendJson({ ok: false, error: `未知的定时任务：${job}` }, 400); return; }
+          const result = await runDailyNews({ force: body.force === true });
+          sendJson(result, 200);
+          return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/socialV2/dsh-task') {
+          const body = await readBody();
+          const key = String(body.key ?? '').trim();
+          if (!key) { sendJson({ ok: false, error: 'key 不能为空' }, 400); return; }
+          if (req.headers['x-agent-token'] && !agentTokenOk(key, req.headers['x-agent-token'])) { sendJson({ ok: false, error: 'agent token 无效' }, 403); return; }
+          if (req.headers['x-agent-token'] && !v2SessionAllowed(key)) { sendJson({ ok: false, error: '目标不在当前模式允许范围内' }, 403); return; }
+          const result = await runDshTask({ key, instruction: body.instruction, timeoutMs: body.timeoutMs });
+          sendJson(result, result.ok ? 200 : (result.code === 'not-owner' ? 403 : 200));
           return;
         }
         if (req.method === 'POST' && url.pathname === '/api/socialV2/wake') {

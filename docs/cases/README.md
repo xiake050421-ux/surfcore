@@ -6,6 +6,7 @@
 
 | 日期 | 案例 | 一句话 | 版本 |
 | --- | --- | --- | --- |
+| 2026-10-30 | [QQ 端 DSH 任务 + 每日 60 秒日报](2026-10-30-qq-dsh-task-and-daily-news.md) | 私聊撞唤醒配额→放宽；聊天会话无本地工具→新增 worker 通道；日报由桥接定时发群 | 待发布 |
 | 2026-10-29 | [云端参考音频“下载”没反应](2026-10-29-cloud-sample-download.md) | 接口 200 但 `<a target=_blank>` 被宿主拦 → fetch+Blob，加「打开所在目录」 | 待发布 |
 | 2026-10-29 | [语音包离线导入](2026-10-29-voice-pack-offline-import.md) | 只有“改安装目录”且静默失败 → 校验/复制/备份/回滚/结构化错误，本地+云端 | 待发布 |
 | 2026-10-29 | [提问回答无身份来源 + 特权操作无审计](2026-10-29-owner-question-audit.md) | question 不读 isOwner、DSH 单选不许 selected+custom → custom-only；7 类主人审计 | 待发布 |

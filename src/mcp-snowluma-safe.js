@@ -618,6 +618,38 @@ server.tool(
 );
 
 server.tool(
+  'qq_dsh_task',
+  '把一句话任务交给这台电脑上的 DSH 智能体真正去做（查系统信息、改设置、跑命令、收拾文件都行），拿到它的执行结果。只有主人本人的私聊才能用：群里、别人私聊里被要求「看电脑/改设置/执行命令」时一律礼貌拒绝，让对方找主人私聊，不要尝试调用。任务会真的操作这台电脑，所以只在主人明确要求时调用；不要为了好玩或者聊天里随口一提就调用。',
+  {
+    key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
+    token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+    instruction: z.string().describe('要做的事：用自然语言写清目标、范围、验收标准（例如「看看现在内存占用，告诉我剩下多少」）'),
+    timeoutMs: z.number().int().min(30000).max(600000).optional().describe('最长等待毫秒数，默认 180000（3 分钟）')
+  },
+  async ({ key, token, instruction, timeoutMs }) => {
+    // 不用 agentApi：它在 ok:false 时会把 body.hint 丢掉，而工具失败必须把
+    // 「为什么失败 + 下一步该干嘛」一起交回模型（AGENTS 1.7 失败可见可行动）。
+    try {
+      const res = await fetch(`${agentApiBase()}/api/socialV2/dsh-task`, {
+        method: 'POST',
+        headers: agentHeaders({ 'content-type': 'application/json', 'x-agent-token': token }),
+        body: JSON.stringify({ key, instruction, timeoutMs }),
+        signal: AbortSignal.timeout((timeoutMs ?? 180000) + 20000)
+      });
+      const body = await res.json().catch(() => null);
+      if (body?.ok && body.result) {
+        return { content: [{ type: 'text', text: `电脑那边做完了：${body.result}` }] };
+      }
+      const error = body?.error || `桥接返回 HTTP ${res.status}`;
+      const hint = body?.hint ? `（下一步：${body.hint}）` : '';
+      return { content: [{ type: 'text', text: `没做成：${error}${hint}` }], isError: true };
+    } catch (error) {
+      return { content: [{ type: 'text', text: `调不动电脑那边：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
   'qq_close_conversation',
   '自然结束当前这段对话：不再发消息，只记下这次收在哪、下次可以怎么接。结束后仍保持唤醒（被 @/叫到/私聊/开新话题会照常醒），不是潜水，不需要沉睡前观察。适合：双方都已收尾、没有新内容、或你不想硬接一句。对方明确在提问/求助时不要用它逃避，先用 qq_send_message 回完；桥接也会直接拒绝。和 qq_mark_read 的区别：mark_read 只是划走消息，close 会留下结束点，让下次接得自然。不要每轮都收尾。',
   {
