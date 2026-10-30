@@ -14,8 +14,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
-const root = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), '..');
+// 用 fileURLToPath 而不是 URL.pathname：仓库装在含中文/空格的路径下时，
+// pathname 是百分号编码的（E:\%E5%A4%A7...），git -C 会直接找不到目录。
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
 const verifyRefIdx = args.indexOf('--verify-ref');
 const verifyDirIdx = args.indexOf('--verify');
