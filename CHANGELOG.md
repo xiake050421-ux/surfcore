@@ -4,6 +4,42 @@
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 发布规则见 [docs/guides/VERSIONS.md](docs/guides/VERSIONS.md)。
 
+## [0.8.0] - 2026-10-30
+
+### 新增
+
+- **QQ 端「DSH 任务」通道**：QQ 私聊里由主人明确要求时，大肥鱼可以把一句话任务交给
+  DSH 的 worker 会话执行（查系统信息、操作本机），结果用 2~4 句中文回给主人。
+  新工具 `qq_dsh_task`（`src/mcp-snowluma-safe.js`）+ 桥接 `POST /api/socialV2/dsh-task`
+  （`src/bridge.js`），只对 `private:<ownerQQ>` 开放；聊天会话本身仍然没有本地工具。
+  > 调查记录：[QQ 端 DSH 任务 + 每日 60 秒日报](docs/cases/2026-10-30-qq-dsh-task-and-daily-news.md)
+- **每日「60 秒读懂世界」定时发群**：`schedule.dailyNews`（`enabled/time/groupId/itemCount/timeoutMs`），
+  桥接每 30 秒查一次，到点让 worker 联网取当天新闻（数字开头 10 条）发到指定群；
+  当天去重、失败 10 分钟退避、当日最多 6 次，失败原因写日志与 state。
+  > 调查记录：[QQ 端 DSH 任务 + 每日 60 秒日报](docs/cases/2026-10-30-qq-dsh-task-and-daily-news.md)
+- **桌宠提醒「DSH 需要你确认」**：`approval/asked` 或调用 `ask_user_question` 时，向 surfcore
+  桌宠的事件流推一条 `⚠ 需要你确认权限（对话名）` / `⚠ 需要你回答一下（对话名）`，同类 20 秒去重。
+  桌宠原本只转发 QQ 回复，现在也能提醒权限确认。
+  > 调查记录：[桌宠不会提醒「DSH 需要你确认」](docs/cases/2026-10-30-pet-approval-bubble.md)
+- **DSH 端口守护**：桥接每 60 秒复核正在用的 DSH 回环地址，连续两轮探不通就切到新发现的地
+  址、作废旧 Cookie、重开事件流（`NodeApiClient.moveToBaseUrl`），并写回 `config.json`。
+  DSH 桌面端换端口后不再需要手动重启桥接。
+  > 调查记录：[桥接只在启动时认 DSH 端口](docs/cases/2026-10-30-dsh-port-watch.md)
+
+### 修复
+
+- **回合被 DSH 闸门拦掉时不再静默**：`turn/end` 的 `reason.kind === 'blocked'` 以前被当成
+  「纯工具调用、没有文本」，用户侧表现是已读不回且无任何报错。现在会记日志、退役会话，并用
+  重投队列把那条消息再投一次（最多 2 次）。
+  > 调查记录：[QQ 回合被 DSH 闸门拦掉却静默](docs/cases/2026-10-30-qq-blocked-turns.md)
+- **SnowLuma 2.x 一键启动打不开**：`snowLumaWebui()` 只认旧版 `<launcherPath>/app/config/runtime.json`，
+  2.x 是扁平的 `<launcherPath>/config/runtime.json`，读不到就回落 5100 并误判「没启动」；
+  现在两个位置都找，并支持 `snowluma.webuiPort` 显式覆盖。
+- **Token 防爆破额度把人挡在外面**：私聊默认一天只唤醒 10 次，用完就完全不回复
+  （日志 `[token-guard] 跳过唤醒 … 今天不再唤醒`）。`socialV2.tokenGuard` 现在按需调大
+  （示例 `maxWakesPerDay: 40`、`privateMaxWakesPerDay: 30`、`minWakeGapMs: 90000`），
+  并可通过 `POST /api/socialV2/config` 热更新，不必重启桥接。
+
 ## [0.7.0] - 2026-10-29
 
 ### 功能（语音包离线导入：本地/云端都能从网盘包导入）
