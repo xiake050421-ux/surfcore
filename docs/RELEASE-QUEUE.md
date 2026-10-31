@@ -11,6 +11,22 @@
 
 ## 待发布
 
+### 已发布 v0.9.0 · 2026-10-31 22:40 · 合入上游 0.8.1 + fork 线功能
+<!-- release-batch: start=2026-10-31T20:00+08:00 end=2026-10-31T22:40+08:00 commits=cdd4748..66b44df -->
+
+**覆盖提交**：`66b44df`（远端 main，本地同树）
+**版本**：`0.9.0`（先 `git merge upstream/main` 合入上游 v0.8.1，再 bump minor 避开与上游 0.8.x 撞号）
+**发布**：https://github.com/xiake050421-ux/surfcore/releases/tag/v0.9.0
+
+**本轮范围**：
+
+1. **合入上游 v0.8.1**（0.7.20–0.8.1 共 6 个版本）：一键启动/停止 SurfCore、白名单归一化、称呼归属、断线告警去抖、语气层 + 身份底座（`src/persona-identity.js`、`src/persona-layers.js`）。
+2. **fork 线自 0.8.0 起的功能保留**：QQ 端 DSH 任务通道（`qq_dsh_task`）、每日 60 秒日报、桌宠权限提醒、DSH 端口守护。
+3. **修复保留**：blocked 回合不再静默（重建会话 + 重投）、SnowLuma 2.x 扁平目录一键启动、Token 防爆破额度可调、更新源可配置（`versionRepo` / `RELEASES_LATEST_URL` 指向 fork）。
+4. **发布脚本坑**：`publish-via-api.mjs --tag` 只 `POST /git/refs` 指向本地 tag commit，远端没有 annotated tag 对象 → 必须先 `POST /git/tags` 建对象再建 ref（本次手工补跑）。
+
+**case**：`docs/cases/2026-10-30-qq-dsh-task-and-daily-news.md`、`2026-10-30-pet-approval-bubble.md`、`2026-10-30-qq-blocked-turns.md`、`2026-10-30-dsh-port-watch.md`、`2026-10-30-update-source-fork.md`
+
 ### 已发布 v0.8.0 · 2026-10-31 21:10 · 本轮全部优化
 <!-- release-batch: start=2026-10-31T16:25+08:00 end=2026-10-31T21:10+08:00 commits=a27a1e4..68dc2b7 -->
 
