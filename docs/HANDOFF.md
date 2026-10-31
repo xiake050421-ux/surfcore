@@ -5,14 +5,81 @@
 
 ---
 
-## 快照：2026-10-30 14:15–14:50（对齐 v0.7.18 现状）
+## 快照：2026-10-31 09:55（对齐 v0.7.22 + 人格分层）
 
 ### 当前事实
 
-- **HEAD**：`3a82618 feat(guard): 闸门事件中心与单轮 L3 止血`（其后只有发布队列文档提交）
-- **package.json version**：`0.7.18`（编辑会话未改版本）
-- **工作区**：干净（`git status --porcelain` 无输出）
+- **HEAD**：`68dc2b7 chore(release): 同步限制去重清单`
+- **package.json version**：`0.7.22`（编辑会话未改版本）
+- **工作区**：干净
 - 本会话上一段（10-29）的离线导入、中文路径、管理员称呼修复均已进 v0.7.0–v0.7.4。
+
+### 本轮全部优化（2026-10-31 21:10）
+
+- 交接块见 `docs/RELEASE-QUEUE.md` 顶部「本轮全部优化交接」；
+- 范围：账单/群分层/人格语气/工具快照+profile/UI 分类搜索/会话审计/记忆卡/限制失败可见性；
+- audit 107/107；plugins/surfcore npm test 通过；manifest verify 0；
+- 重启 DSH + QQ 桥接；默认 balanced；
+
+### 本次新增（2026-10-31 15:55，第二轮收紧）
+
+- 第二轮样本 117 唤醒 / 13 发送 / 104 close-only，暴露 strict direct 仍有漏口；
+- 只认真正的 @昵称/引用自己；裸昵称、owner、fish bypass 不再绕过每日配额；
+- 需要再次重启桥接验证；audit 99/99。
+
+### 本次新增（2026-10-31 13:55，hotfix）
+
+- **question 不再绕过每日配额**：新增 `src/wake-policy.js`；
+- 只有 @/名字/拍一拍/私聊/管理员算 hard direct；
+- question 仍可唤醒，但受 20 次/日 + 2 分钟间隔；
+- 一小时样本：138 唤醒、15 发送、116 close-only；两个群占 129 唤醒。
+- 需要重启桥接生效；audit 99/99。
+
+### 本次新增（2026-10-31 12:40，Phase 4 后）
+
+- **A+B 账单**：每个角色包 + 每个 QQ 群/私聊一份 Markdown；
+- 位置：`~/.dsh/surfcore/billing/{index.md,characters/*,conversations/*}`；
+- 数据：token 账本 + 遥测；启动 30 秒后生成、每 10 分钟刷新；手动 `node scripts/billing-report.mjs`；
+- 归因：群/私聊精确；单角色历史全归当前角色；多角色无遥测标未归因；
+- 群内个人不精确分摊；不记录正文；不调用模型。
+
+### 本次新增（2026-10-31 11:30，0.7.23 后，Phase 1A）
+
+- **调用链重建（只读）**：
+  - bridge 投递 wake 时生成 `wakeId`，QQ 会话事件带 `wakeId` 写入遥测；
+  - `context-call-chain-report.mjs` 去重 bridge/plugin，重建 `wake → turn/step → tool`；
+  - 48 wake 样本：close-only 26 次、send→close 10 次、backlog 7 次 ¥0.933、
+    delivered 17/48；model calls/wake p50=2/p90=4/p99=11。
+- 未改 close/wait/send、调用上限、唤醒合并、调度；下一步先语义复核
+  close-only / keyword / backlog / question 错误。
+- 测试：`test-context-call-chain`；audit **95/95**。
+
+### 本次新增（2026-10-31 10:15，0.7.22 后，Phase 0A）
+
+- **上下文/成本遥测（只测量）**：
+  - `src/context-telemetry.js`：旁路 JSONL，记录唤醒、模型 usage、工具结果字符数/耗时、turn 起止；
+  - 插件 `session/event` 采所有会话；bridge 在真正投递 wake 时记录 prompt 字符/分段；
+  - `scripts/context-telemetry-report.mjs` 输出按唤醒原因/工具聚合的基线；
+  - 不改 prompt、工具、guard、会话策略；observed/estimated/coverage 缺口明确标注；
+  - 数据：`<repo>/state/context-telemetry-bridge.jsonl` +
+    `~/.dsh/surfcore/context-telemetry-plugin.jsonl`。
+- 测试：`test-context-telemetry`；`npm run test:audit` **94/94**。
+- 未做：Phase 1 工具契约/复合快照；系统提示/工具 schema/历史的精确拆分。
+- 下一步：重启 DSH + QQ 桥接，正常用 3–7 天，跑报告建立基线，再进 Phase 1。
+
+### 本次新增（2026-10-31 09:55，0.7.22 后）
+
+- **人格卡分层（Persona Layers v1）**：
+  - `persona.md` 保留人格核心；新增可选 `persona.daily.md` 与
+    `persona.scenes/{qq-group,qq-private,bili,pet}.md`；
+  - `src/persona-layers.js` 统一组合核心→场景→日常；QQ 群聊/私聊按会话选场景；
+  - B站/桌宠也读各自场景 + 日常；超预算先裁日常/场景；
+  - 角色页三层手动编辑，顶部醒目说明；不做模型自动改写；
+  - `/persona` 逐层读写、按层备份恢复；快照/回档带三层；
+  - 记忆卡/向量记忆未动。
+- 测试：`test-persona-layers`、`test-character-api`、`test-client-contract`；
+  `npm run test:audit` **93/93**（含本批新增）。
+- 未手测：真实 QQ 群聊/私聊注入、B站/桌宠实际提示词、页面三层编辑的浏览器交互。
 
 ### v0.7.4 → v0.7.18 发布线
 
@@ -41,18 +108,41 @@
   → `cancelTurn` + 直接 QQ 通知；概览「安全提醒」卡，L2/L3 弹窗。
 - 本版**未做**单轮费用上限、端口/进程归属、L0/L1 全量生产者接入；报告/文档已标。
 
+### 本次新增（2026-10-30 19:30，0.7.19 后）
+
+- **SnowLuma 断线通道闸门**：`sendWakePromptV2` 开头检查 WS/最近发送失败，不健康就不创建
+  DSH 会话；`sendToQQ`/`onebotSend` 记录成功/失败，连续 3 次失败暂停该会话自动唤醒 30 分钟；
+- SnowLuma `close` 写 L2 `send-channel-down`，`open` 写 L1 恢复；UI SnowLuma 卡显示
+  `diagnosis.hint`，事件中心弹窗给“启动/重启 SnowLuma，确认 3000/3001”的建议；
+- 新增 `test-snowluma-channel-gate`；本批仍未做 `wasted` 精确金额/端口进程体检。
+
+### 本次新增（2026-10-30 23:30，0.7.19 后）
+
+- **语音包退出自动更新**：`updates.components()` 不再登记 `surfvoice-local/cloud`；
+  语音包是离线运行时/模型/vendor 包，不走通用 `updateFromZip`；
+- 语音页加说明：需要新版本时用「重新导入离线包」，导入保留 config/venv/models/vendor；
+- `test-updates-voice` 钉住“不再登记语音包 + 页面说明”。
+
+### 本次新增（2026-10-31，0.7.20 后）
+
+- **一键启动 SurfCore + 一键停止**：概览多选 QQ（含 SnowLuma）/ B站 / 桌宠 / 语音；
+  语音加本地/云端单选；每项独立 `ok/code/error/hint`；
+- `start-selected` / `stop-selected`；停止顺序语音→QQ→B站→桌宠；
+  QQ 停止不关闭 SnowLuma 本体；`overview.launch` 统一状态供各页读取；
+- 新增 `test-launch-components` + 扩展 `test-platform-start-host` / `test-client-contract`。
+
 ### 已验证（本会话，2026-10-30）
 
-- `npm run test:audit` → **88/88**（新增 test-plugin-compat / test-gate-events）；
-- `node scripts/test-plugin-compat.mjs` / `node scripts/test-gate-events.mjs` → 通过（工具拒绝、压缩接管、未知插件、L0–L3、步数/重复错误/额度止血）。
+- `npm run test:audit` → **90/90**（新增 test-snowluma-channel-gate / test-launch-components）；
+- `test-plugin-compat` / `test-gate-events` / `test-snowluma-channel-gate` / `test-launch-components` → 通过。
 - `plugins/surfcore npm test` → **全绿**；
 - 本次新增 `test-plugin-compat` / `test-gate-events`；并修了 3 个 0.7.5 blocked 语义后的过时夹具（`test-updates-version/pending/voice`）。
 
 ### 没验证 / 当前待办
 
 - **v0.7.18 的 B站 扫码/登录核查/长 UID 没有在本会话逐项实机复测**；以发布说明和发布会话验证为准。
-- **插件体检按钮/L2-L3 安全弹窗还没有在真实设置页点过**；`scanPluginCompatibility` 已用真实 desktop profile 跑过，
-  UI 弹窗/复制/重新体检/真实回合 cancel 需重启 DSH 后手测。
+- **一键启动/停止、插件体检、L2-L3 弹窗、SnowLuma 断线提示还没有在真实设置页点过**；
+  真实进程启停、真实回合 cancel、SnowLuma 断线零 token 增长需重启 DSH 后手测。
 - **语音离线包导入 UI 仍没在真实设置页点过**（确认框/错误弹窗/删源/删备份）；真实 7.9G 导入已跑通。
 - 语音包许可仍未定：piper GPL、huayan 数据集、age12 微调权重；候选包在 `D:\surfcore-poc\release\`，
   **不要当公开包直接上传**。

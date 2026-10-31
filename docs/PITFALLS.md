@@ -2929,3 +2929,242 @@ QQ 会话的 `qq-tool-restrict` 不认识这些工具，执行期拒绝。模型
 
 **验证**：`node scripts/test-gate-events.mjs`；`npm run test:audit` 88/88；
 `plugins/surfcore npm test`。
+
+## #90（2026-10-30）SnowLuma 断线，主动唤醒仍跑完整 LLM 空烧
+
+**现象**：SnowLuma 未启动/掉线时，`proactiveCheck` 仍创建会话、跑完整模型、最后发送失败；
+失败只写 bridge.log，每 40–90 分钟重复，用户无感知。
+
+**根因**：
+1. `sendWakePromptV2` 的 guard 只查 socialV2 开关/暂停/鱼群/token/繁忙/限频；
+2. 没有检查 `snowlumaHealth.connected` / 最近发送失败；
+3. 发送失败只记 `lastSendFailed`，没有跨回合失败计数/挂起；
+4. 失败消耗没有 UI/事件，只有日志。
+
+**修法**：
+- `sendWakePromptV2` 最前面 `qqSendChannelStatus()`：WS 未连接或最近发送失败 → return，
+  不 `ensureSession`、不投 prompt；
+- `sendToQQ` / `onebotSend` 记录成功/失败；连续 3 次失败把会话 `wakeSuspendedUntil`
+  写进 `social-v2.json`，`scheduleProactiveCheckV2` 暂停排期；
+- SnowLuma `close` 写 L2 `send-channel-down`，`open` 写 L1 恢复；`send-failed` 首次 L1；
+- UI SnowLuma 安装卡显示 `diagnosis.hint`；事件中心弹窗给“启动/重启 SnowLuma，
+  确认 3000/3001”的建议。
+
+**未做**：首次 HTTP 失败的预知、`wasted` 精确金额标记、端口/进程体检。
+
+**验证**：`node scripts/test-snowluma-channel-gate.mjs`（断开/暂停不创建 DSH 会话，
+恢复后创建）；`npm run test:audit` 89/89。
+
+## #91（2026-10-30）语音包被塞进 zip 自动更新 → 永远无法自动更新
+
+**现象**：语音包（surfvoicelocal / surfvoicecloud）在更新面板显示有更新，点更新下载后失败
+`verify.bad-archive`；用户以为“补 package.json 就能修”。
+
+**根因**：
+- `updates.components()` 把语音包登记成 `kind:auto`，走通用 `updateFromZip()`；
+- 该方法硬编码 `surfcore-*` 根目录 + `package.json` + `release/install-manifest.json`；
+- 语音包只有 `version.json` / `models.json` / `config.example.toml`，是离线运行时/模型/vendor 包；
+- 只补 `package.json` 仍过不了根目录、清单、配置保留三关。
+
+**修法**：语音包从自动更新列表移除；语音页明确“不参与检查更新，需要新版本时用
+重新导入离线包”，导入事务保留 config/venv/models/vendor。
+
+**未做**：语音包自动版本检查/通知；需要时另做独立手动更新通道，不复用 `updateFromZip`。
+
+**验证**：`plugins/surfcore npm test`（test-updates-voice 钉住不再登记 surfvoice 组件 +
+语音页说明）；`npm run test:audit` 89/89。
+
+## #92（2026-10-31）一键启动只覆盖 QQ/B站，桌宠/语音各自为政，且没有一键停止
+
+**现象**：概览「一键启动」只拉 QQ/B站；桌宠/语音要去各自页启动；没有统一停止；
+切换页面时状态来源分散，用户不确定“到底启没启”。
+
+**根因**：
+- `start-all` 只处理 `platforms.start.{qq,bili}`，桌宠/语音不在同一编排里；
+- 语音启动依赖 QQ 桥接，但没有明确依赖报错；
+- 没有 `stop-selected`；停止顺序也没有考虑“语音由桥接托管”。
+
+**修法**：
+- 概览改为多选 `QQ（含 SnowLuma）/ B站 / 桌宠 / 语音`，语音加本地/云端单选；
+- `start-selected` / `stop-selected` 每项返回 `ok/code/error/hint`；
+- `overview.launch` 统一 `bridgeStatus / schedulerStatus / petService / /api/voice/packs`；
+- 停止顺序：语音→QQ→B站→桌宠；QQ 停止不关闭 SnowLuma 本体；
+- 失败行 + toast + `lastError` 状态行，不静默。
+
+**未做**：真实进程启停手测、语音页深链、SnowLuma 本体停止（设计边界）。
+
+**验证**：`plugins/surfcore/scripts/test-platform-start-host.mjs`（结构化失败/空选择/停止幂等）、
+`test-client-contract.mjs`（按钮/多选/语音分支）；`npm run test:audit` 90/90。
+
+## 白名单多写入点 / 重启后积压不唤醒
+
+- **现象**：`allow.private` 只剩机器人自己的号 → 主人私信被忽略；桥接重启后白名单群 `unread>0` 但没人唤醒；
+  安装/诊断后用户加的白名单丢失。
+- **根因**：白名单 3 个写入点各自拼数组（`[owner]` 整体替换）；唤醒只由新消息事件触发；
+  token-guard day 拦截没有 `retryAfterMs`，重试定时器不启动。
+- **修法**（0.7.22）：`src/allowlist.js` 统一归一化（去自己、补主人、去重）+ 启动/登录/就绪自愈；
+  四个写入点共用；reserved2 就绪后补唤醒积压（最多 5 个）；day 带 `retryAfterMs`、direct 豁免；
+  未授权/token 日志 10 分钟节流。
+- **教训**：同一配置的写入点必须共用一个归一化函数；重启恢复是生命周期步骤，不能等事件触发。
+
+## 称呼/名字记忆没有按人归属
+
+- **现象**：主人被叫成别人（对象）的称呼；私聊里叫错人。
+- **根因**：对齐表的称呼只在群聊注入；记忆卡里非主人的私聊记录不带说话人。
+- **修法**（0.7.22）：`src/callname.js` 按当前 QQ 取称呼并只注入当前会话；
+  记忆行渲染成 `说话人（私聊/群聊）：内容`，并补"称呼只属于原话的人"规则。
+- **教训**：跨会话共享的记忆必须带归属（谁说的、哪个场景），否则 A 的偏好会套到 B 身上。
+
+## #93（2026-10-31）人格卡只有一张，日常/场景混在一起，改一点就把缓存前缀打掉
+
+**现象**：人格卡 `persona.md` 一整张注入 QQ/B站/桌宠；想改近期状态只能改整张，
+B站/桌宠被迫读 QQ 规则；核心和日常没有边界。
+
+**根因**：
+- 角色系统只有单 `persona.md`，`role.maxInjectChars` 只做总长度截断；
+- 没有平台/群聊/私聊场景文件；
+- 日常变化会改整段系统提示，缓存从变化点失效。
+
+**修法**：
+- `persona.md` 保持人格核心；新增可选 `persona.daily.md` 与
+  `persona.scenes/{qq-group,qq-private,bili,pet}.md`；
+- `src/persona-layers.js` 统一组合：核心→场景→日常，超预算先裁日常/场景；
+- QQ 按 `group:`/`private:` 选场景；B站/桌宠各读自己的场景；
+- `/persona` 三层读写，客户端逐层手动编辑 + 醒目说明；不做自动改写；
+- 快照/回档带三层；旧角色没有新文件时行为不变。
+
+**未做**：日常自动生成、任务型 ContextRecipe、记忆分层、缓存收益实测。
+
+**验证**：`test-persona-layers`（组合/预算/平台/v1v2/接线）、
+`test-character-api`（三层读写/未知场景/快照回档）、`test-client-contract`（分层 UI）；
+`npm run test:audit` 93/93。
+
+## #94（2026-10-31）只有总 token，没有逐唤醒/逐工具账单，无法判断钱花在哪
+
+**现象**：token 账本只有「QQ/B站/其他 + 当日总量」，能看到今天花了多少，
+但回答不了：哪类唤醒最多、哪一步开始膨胀、哪个工具反复查、工具结果多大。
+
+**根因**：
+- token ledger 只折叠 provider usage；
+- 工具调用/结果只在 `tool-calls.jsonl` 有日志，没有和模型调用/唤醒关联；
+- prompt 组成没有分段统计。
+
+**修法（Phase 0A）**：
+- 新增 `src/context-telemetry.js`：旁路 JSONL，只记录长度/usage/工具名/错误码，不记正文；
+- 插件 `session/event` 采所有会话的 turn/model/tool 事件；
+- bridge 在真正投递 wake 时记录 prompt 总字符与分段字符；
+- `scripts/context-telemetry-report.mjs` 输出按唤醒原因/工具聚合的基线；
+- observed / estimated / coveragePct 明确标注，不把字符数冒充 token。
+
+**不做**：不改 prompt、工具、guard、会话策略；不改 token 账本。
+
+**验证**：`test-context-telemetry.mjs`（去重/工具大小/不记正文/写失败不抛/接线）、
+`npm run test:audit` 94/94。
+
+## SnowLuma 明明连着却弹「发送通道断开」，且每次打开设置页都弹
+
+- **现象**：WS 正常、能收发，但概览弹 L2 send-channel-down（code=1006）；打开设置页反复弹。
+- **根因**：`close` 立刻记 L2（1006 多为瞬时抖动）；恢复（open）只记 L1，不确认旧 L2；
+  UI 每轮取未确认事件 → 一直弹；文案还误称“自动唤醒已暂停”。
+- **修法**（0.7.23）：close 加 15 秒去抖窗口；open 时 `ackByDedupe` 自动确认旧断线事件；
+  文案改为“恢复前跳过主动唤醒”；UI 在 connected=true 时过滤并自动确认旧事件。
+- **教训**：断线是事件、不可用是状态；告警要看状态并带去抖，恢复要结掉旧事件。
+
+## #95（2026-10-31）只看工具频率会误判 close：它同时改已读/收尾/唤醒安全
+
+**现象**：`qq_close_conversation` 65 次，占工具调用 40%，容易被当成“可直接自动化的收尾”。
+
+**根因**：
+- `closeConversationV2` 不只是“关闭”：它还做 closure gate、按 throughSeq 标已读、
+  写 closure 记录（summary/nextOpening/cooldown）、清 noAction、ensureWakeable、取消 replyCheck；
+- 模型还要提供 summary/nextOpening 语义；
+- 只看调用次数，看不到 close-only / send→close / close 被 gate 拒绝的差异。
+
+**修法（Phase 1A，只读）**：
+- bridge 在真正投递 wake 时生成 wakeId，并把 QQ 会话事件写入带 wakeId 的遥测；
+- 新增 `context-call-chain-report.mjs`：bridge/plugin 去重，按 wakeId 重建路径；
+- 报告 delivered / closed / observedOnly / 成本 / 每 wake 模型调用数；
+- 不自动 close、不合并、不设统一上限。
+
+**数据（48 wake 样本）**：close-only 26 次/52 调用/¥0.699；send→close 10 次；
+delivered 17 次（¥1.80），未交付 31 次（¥0.89）；keyword 12 次 0 交付；backlog 7 次 ¥0.933。
+
+**结论**：先语义复核 close-only / keyword / backlog / question 错误，再决定动作包；
+不能靠调用频率直接删 close。
+
+**验证**：`test-context-call-chain.mjs`；`npm run test:audit` 95/95。
+
+## #96（2026-10-31）重启补唤醒硬编码 5 个会话，backlog 冷启动最贵
+
+**现象**：Phase 1A 样本里 backlog 7 次唤醒 ¥0.933，明显高于普通唤醒；启动时一次最多叫醒 5 个会话。
+
+**根因**：
+- `wakeBacklogConversations` 硬编码 `slice(0, 5)`；
+- 每次冷启动都要重新建立上下文/缓存，backlog 的交付率又低（样本 1/7）；
+- 没有可配置上限。
+
+**修法**：
+- 新增 `socialV2.wake.backlogMaxSessions`，默认 **3**，范围 1~20；
+- 只取未读最多的前 N 个；其余保留 unread，等下一轮/自然唤醒；
+- 设置页高级设置可调；
+- 不合并不同会话上下文，不删消息。
+
+**验证**：`test-backlog-cap.mjs`；`npm run test:audit` 96/96（待跑）。
+
+## #97（2026-10-31）账单不能按群友精确分摊
+
+**现象**：想做“每个用户一份精确 token 账单”，但群聊一次模型调用是整群共享上下文，无法精确归到某个群友。
+
+**修法**：
+- 做 A+B：每个角色包、每个 QQ 群/私聊；
+- 私聊账单精确到人；群账单只到群；
+- 群友个人不做精确分摊，最多后续做“触发/参与”估算并标注；
+- 账单不记录消息正文。
+
+**验证**：`test-billing-report` / `test-billing-service`。
+
+## #98（2026-10-31）question 被当成 direct，绕过每日唤醒上限
+
+**现象**：一小时样本 138 次唤醒，一个群 75 次（65 次 question），只有 15 次发送；close-only 116 次。
+
+**根因**：
+- `isDirectedAtAi()` 把“你+吗/呢/怎么”等普通群聊当成在问 AI；
+- `directWake` 把 question 当 direct；
+- direct 绕过 `maxWakesPerDay=20` 和 2 分钟间隔，导致无限唤醒。
+
+**修法**：
+- 新增 `src/wake-policy.js`：只有 @/名字/拍一拍/私聊/管理员可绕过；
+- question 仍可唤醒，但受每日配额；
+- unread 严格 direct 只认 owner/引用自己/真实 @ 或昵称。
+
+**验证**：`test-wake-policy`；`npm run test:audit` 99/99。
+
+## L3「同一工具和错误反复出现」被业务拒绝误触发
+
+- **现象**：QQ 里突然提示本轮被停止，事件是 turn-guard，看日志才知道是 `qq_close_conversation` 被拒 3 次。
+- **根因**：止血把所有工具错误都当"重试循环"计数，业务拒绝（自带下一步）也被计入。
+- **修法**（0.7.24）：`isExpectedToolError()` 排除收尾失败/白名单/参数/限流等预期拒绝；
+  环境错误仍按阈值停轮；L3 弹窗显示工具/错误/会话。
+- **教训**：错误要先分类再决定是否止血；业务拒绝 ≠ 环境故障。
+
+## #99（2026-10-31）全局收紧 question，把小群也误伤
+
+**现象**：为了解决大群 75 次/小时唤醒，把 question 全局改成不绕过每日配额；小群朋友群的积极唤醒也被压掉。
+
+**根因**：大群/小群需要不同策略，不能用一个全局闸门。
+
+**修法**：
+- 新增 `src/group-policy.js`：成员数/近10分钟消息/手动覆盖 → 小群/大群；
+- 小群恢复原积极唤醒；大群只保留 @/名字/拍一拍/私聊/管理员；
+- 设置页 QQ → 群分层显示人数、活跃、自动判定、强制覆盖；
+- 人格拆出 `persona.tone.md`；群聊 `qq_get_prompt` 默认 tone，核心按需 full。
+
+**验证**：`test-group-policy`、`test-persona-layers`、`test-persona-classify`、`npm run test:audit`。
+
+## 未拆分人格卡在 tone 模式只剩身份底座（人设丢了）
+
+- **现象**：没做人格拆分的旧角色，群聊提示词里只有“你是X；主人是Y”，人设正文不见了。
+- **根因**：tone 模式只组装 tone/场景/日常；身份底座永远非空 → 不再触发“只有旧核心时回退”的分支。
+- **修法**（0.8.1）：tone 模式在**没有语气层**时注入核心（未拆分 / 只拆了日常都算）；有语气才省核心；
+  身份底座抽成 `src/persona-identity.js`，QQ/B站/桌宠三处统一注入。
+- **教训**：默认新增“永远非空”的层会悄悄改变旧兜底条件的语义；兜底要按“有没有实质分层”判断，不是按数组非空。

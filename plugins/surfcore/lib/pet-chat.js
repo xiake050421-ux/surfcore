@@ -22,7 +22,9 @@ import crypto from 'node:crypto';
 import { readBiliConfig, readQqConfig, readUnified, writeJsonAtomic } from './store.js';
 import { resolvePersonaFile } from './persona.js';
 import { memoryCardPromptBlock } from './memory-card.js';
-import { activeMemoryPaths, readCurrentCharacter } from '../../../src/character-persona.js';
+import { activeMemoryPaths, readCurrentCharacter, readPersonaLayerText } from '../../../src/character-persona.js';
+import { buildPersonaIdentity, personaNameFromCard } from '../../../src/persona-identity.js';
+import { composePersonaLayers } from '../../../src/persona-layers.js';
 import { adminFromSources } from '../../../src/admin-identity.js';
 import { appendMemoryInboxEvent } from '../../../src/memory-card.js?rev=20261025-pet-memory2';
 import { synthesizeToFile, wavDurationMs } from '../../../src/voice-tts.js';
@@ -259,7 +261,19 @@ export function createPetChatService({ ctx, stateDir, pluginLog = () => {}, toke
     try { cur = readCurrentCharacter(); } catch {}
     let personaFile = '';
     try { personaFile = resolvePersonaFile() || ''; } catch {}
-    const persona = personaFile ? textFile(personaFile) : '';
+    const personaCore = personaFile ? textFile(personaFile) : '';
+    const persona = composePersonaLayers({
+      core: personaCore,
+      // 身份底座：桌宠也要知道“我是谁、主人是谁”，不依赖用户是否拆分人格。
+      identity: buildPersonaIdentity({ name: personaNameFromCard(personaCore, cur?.name || '这个角色'), owner: ownerInfo().name }),
+      // 语气层：桌宠也用同一套说话方式。
+      tone: readPersonaLayerText('tone'),
+      scene: readPersonaLayerText('scene', 'pet'),
+      daily: readPersonaLayerText('daily'),
+      mode: 'v2',
+      maxChars: 4200,
+      sceneId: 'pet',
+    }).text || personaCore;
     let name = String(cur?.name || '').trim();
     if (!name) {
       const heading = persona.match(/^#\s*([^\n#]{1,40})/m);

@@ -313,6 +313,7 @@ const server = new McpServer({ name: 'snowluma-safe', version: '0.2.0-r4' });
 // 所以这三个仍然只在调用时由桥接校验。
 const TOOL_CONFIG_FLAGS = {
   qq_get_prompt: 'getPrompt',
+  qq_get_context_snapshot: 'getSnapshot',
   qq_get_unread_messages: 'getUnread',
   qq_get_recent_messages: 'getRecent',
   qq_social_state: 'socialState',
@@ -350,10 +351,27 @@ const TOOL_CONFIG_FLAGS = {
   qq_sticker_note: 'stickerNote',
   qq_set_sticker_remark: 'setStickerRemark',
 };
+const TOOL_PROFILE = String(cfg.socialV2?.toolProfile || (cfg.socialV2?.tools?.getSnapshot === false ? 'full' : 'balanced'));
+const PROFILE_HIDDEN = {
+  balanced: new Set([
+    'qq_get_unread_messages', 'qq_get_recent_messages', 'qq_social_state',
+    'qq_get_active_members', 'qq_get_my_recent_messages',
+  ]),
+  compact: new Set([
+    'qq_get_unread_messages', 'qq_get_recent_messages', 'qq_social_state',
+    'qq_get_active_members', 'qq_get_my_recent_messages',
+    'qq_get_group_members', 'qq_get_group_history',
+    'qq_list_stickers', 'qq_list_voices',
+  ]),
+};
 const disabledTools = [];
 {
   const registerTool = server.tool.bind(server);
   server.tool = (name, ...rest) => {
+    if (TOOL_PROFILE !== 'full' && PROFILE_HIDDEN[TOOL_PROFILE]?.has(name)) {
+      disabledTools.push(`${name}(profile:${TOOL_PROFILE})`);
+      return undefined;
+    }
     const flag = TOOL_CONFIG_FLAGS[name];
     if (flag && cfg.socialV2?.tools?.[flag] === false) {
       disabledTools.push(`${name}(${flag})`);
@@ -539,10 +557,18 @@ server.tool(
 server.tool(
   'qq_get_prompt',
   '查看当前二代仿真模式的提示词/角色/推荐值/可用工具/当前唤醒配置（只读）。',
-  { key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'), token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）') },
-  async ({ key, token }) => {
+  {
+    key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
+    token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+    mode: z.enum(['tone', 'full']).optional().describe('默认群聊 tone（只语气/场景/日常），私聊 full；需要完整核心时显式传 full'),
+    sections: z.array(z.enum(['role', 'wake', 'memory', 'stickers', 'slang', 'closure', 'voices'])).optional().describe('默认 role/wake/memory；需要表情/黑话/收尾/语音库时显式加'),
+  },
+  async ({ key, token, mode, sections }) => {
     try {
-      const data = await agentApi(`/api/socialV2/prompt?key=${encodeURIComponent(key)}`, { headers: { 'x-agent-token': token } });
+      const q = new URLSearchParams({ key });
+      if (mode) q.set('mode', mode);
+      if (Array.isArray(sections) && sections.length) q.set('sections', sections.join(','));
+      const data = await agentApi(`/api/socialV2/prompt?${q}`, { headers: { 'x-agent-token': token } });
       return { content: [{ type: 'text', text: serializeModelData(data) }] };
     } catch (error) {
       return { content: [{ type: 'text', text: `获取提示词失败：${error?.message ?? error}` }], isError: true };
@@ -550,6 +576,33 @@ server.tool(
   }
 );
 
+server.tool(
+  'qq_get_context_snapshot',
+  '一次读取会话上下文：未读 + 最近 + 会话状态 + 活跃成员。默认只返回最近少量摘要，带 truncated/refs；需要精确正文再用 qq_get_message_detail。避免连续调用 unread/recent/social/activeMembers。',
+  {
+    key: z.string().describe('会话 key，格式 group:群号 或 private:QQ号'),
+    token: z.string().describe('会话令牌（见唤醒提示中的【会话令牌】）'),
+    include: z.array(z.enum(['unread', 'recent', 'social', 'activeMembers'])).optional().describe('默认四类都取；只取需要的可减少结果'),
+    unreadLimit: z.number().int().min(1).max(100).optional().describe('未读最多返回条数，默认 12'),
+    recentLimit: z.number().int().min(1).max(100).optional().describe('最近消息最多返回条数，默认 10'),
+    afterSeq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional().describe('只取本地 seq 大于该水位的未读；用于补读'),
+    textChars: z.number().int().min(40).max(2000).optional().describe('每条正文最多字符，默认 200'),
+  },
+  async ({ key, token, include, unreadLimit, recentLimit, afterSeq, textChars }) => {
+    try {
+      const q = new URLSearchParams({ key });
+      if (Array.isArray(include) && include.length) q.set('include', include.join(','));
+      if (unreadLimit) q.set('unreadLimit', String(unreadLimit));
+      if (recentLimit) q.set('recentLimit', String(recentLimit));
+      if (afterSeq) q.set('afterSeq', String(afterSeq));
+      if (textChars) q.set('textChars', String(textChars));
+      const data = await agentApi('/api/socialV2/snapshot?' + q.toString(), { headers: { 'x-agent-token': token } });
+      return { content: [{ type: 'text', text: serializeModelData(data) }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: '获取上下文快照失败：' + String(error?.message ?? error) }], isError: true };
+    }
+  }
+);
 server.tool(
   'qq_get_unread_messages',
   '查看未读消息，不自动标记已读。大量积压或快照 partial=true 时，用 afterSeq=readThroughSeq 从水位后按时间顺序补读；从最早未读开始传 0。',

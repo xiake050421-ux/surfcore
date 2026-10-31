@@ -10,6 +10,21 @@
 | 2026-10-30 | [QQ 回合被 DSH 闸门拦掉却静默](2026-10-30-qq-blocked-turns.md) | `turn/end` 的 `blocked` 被当成「无文本」吞掉 → 识别 blocked、退役会话并重投 | 待发布 |
 | 2026-10-30 | [桌宠不会提醒「DSH 需要你确认」](2026-10-30-pet-approval-bubble.md) | 确认请求只在宿主里、桌宠收不到 → 复用它已有的 reply 事件流冒气泡 | 待发布 |
 | 2026-10-30 | [QQ 端 DSH 任务 + 每日 60 秒日报](2026-10-30-qq-dsh-task-and-daily-news.md) | 私聊撞唤醒配额→放宽；聊天会话无本地工具→新增 worker 通道；日报由桥接定时发群 | 待发布 |
+| 2026-10-31 | [限制失败可见性](2026-10-31-limit-ux.md) | 频率/鱼群/Token 上限给出设置路径和错误报告 | 待发布 |
+| 2026-10-31 | [记忆卡手动操作修复](2026-10-31-memory-card-act.md) | item 未定义；toast 阻断 reload | 待发布 |
+| 2026-10-31 | [UI 区域按钮化](2026-10-31-ui-area-modal.md) | 高级设置区域收成按钮/弹窗；群管理进高级 | 待发布 |
+| 2026-10-31 | [SnowLuma 启动告警](2026-10-31-snowluma-startup-warning.md) | 未启动不要弹断线；连过再断才告警 | 待发布 |
+| 2026-10-31 | [快照/工具面/step guard](2026-10-31-tool-snapshot-profile.md) | 合并读取、prompt sections、profile、close 幂等 | 待发布 |
+| 2026-10-31 | [群分层 + 人格语气/智能拆分](2026-10-31-group-tiers-tone.md) | 小群积极、大群严格；tone 默认不载核心；人格卡拆分草稿 | 待发布 |
+| 2026-10-31 | [question 不再绕过每日配额](2026-10-31-question-direct-gate.md) | 普通“你…吗”不再无限唤醒；@/名字/私聊仍可绕过 | 待发布 |
+| 2026-10-31 | [A+B 账单 Markdown](2026-10-31-billing-md.md) | 角色/群/私聊账单；自动刷新；不含正文 | 待发布 |
+| 2026-10-31 | [Phase 3 backlog 上限](2026-10-31-backlog-cap.md) | 启动补唤醒默认 5→3，可配置；保留未读 | 待发布 |
+| 2026-10-31 | [Phase 1A 调用链](2026-10-31-call-chain.md) | wake→turn→tool 路径；close/send/backlog 分布；只读 | 待发布 |
+| 2026-10-31 | [Phase 0A 上下文/成本遥测](2026-10-31-context-telemetry.md) | 只测量：唤醒/模型/工具/prompt 分段；不改行为 | 待发布 |
+| 2026-10-31 | [人格卡分层](2026-10-31-persona-layers.md) | 核心/日常/场景；QQ群聊/私聊/B站/桌宠；手动编辑、预算与快照 | 待发布 |
+| 2026-10-31 | [一键启动 SurfCore + 一键停止](2026-10-31-one-click-launch-stop.md) | QQ/B站/桌宠/语音多选；语音本地/云端；每项结果与停止；状态统一 | 待发布 |
+| 2026-10-30 | [语音包被误放进 zip 自动更新](2026-10-30-voice-pack-no-auto-update.md) | 语音包没有 package.json/清单 → 从自动更新移除，改语音页手动重新导入 | 待发布 |
+| 2026-10-30 | [SnowLuma 断线时主动唤醒空烧](2026-10-30-snowluma-channel-gate.md) | 唤醒前查发送通道；断开/连续失败不创建 DSH 会话；L2 事件 + 建议 | 待发布 |
 | 2026-10-30 | [闸门事件中心 + 单轮 L3 止血](2026-10-30-gate-events-turn-guard.md) | 重复 compress / 步数 / 回合内额度到顶 → cancel-only + 直接通知；L0-L3 事件中心 | 待发布 |
 | 2026-10-30 | [插件冲突体检](2026-10-30-plugin-compat-check.md) | 第三方 compress 被 QQ 白名单拒 → 只读体检报工具/压缩冲突；未知插件标 unknown | 待发布 |
 | 2026-10-29 | [设置称呼「弥叭」仍叫管理员](2026-10-29-admin-display-name-projection.md) | QQ 投影只写 ownerQQ，桥接兜底把「管理员」当称呼 → 完整投影 + 空串兜底 | 待发布 |

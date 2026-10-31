@@ -11,6 +11,405 @@
 
 ## 待发布
 
+### 已发布 v0.8.0 · 2026-10-31 21:10 · 本轮全部优化
+<!-- release-batch: start=2026-10-31T16:25+08:00 end=2026-10-31T21:10+08:00 commits=a27a1e4..68dc2b7 -->
+
+**覆盖提交**：`68dc2b7`（范围 `a27a1e4..68dc2b7`）
+**建议**：**0.7.27**（工具面/UI 改动较大，也可按 0.8.0 minor 处理；版本号由发布会话定）
+**当前版本**：`0.7.23`，未 bump / 未 tag / 未 push
+
+**本轮范围**：
+
+1. **Token 测量与账单**
+   - 上下文遥测、调用链、成本台账；
+   - A+B 账单：角色包 + 每个 QQ 群/私聊 Markdown，自动 10 分钟刷新；
+   - 账单归因：角色 characterId 优先，单角色历史回退，多角色缺失标 `_unattributed`。
+
+2. **唤醒与群分层**
+   - `src/group-policy.js`：成员数/近10分钟活跃/手动覆盖；
+   - 小群保留积极唤醒，大群只认真实点名；
+   - backlog 上限默认 3；
+   - question/keyword 不再全局绕过每日配额；
+   - 群管理移入 QQ 高级设置，强制覆盖选择即保存；
+   - 修复 group key 正则和 group-policy POST 二次 JSON.parse。
+
+3. **人格语气与智能拆分**
+   - `persona.tone.md` 语气层；
+   - 群聊 `qq_get_prompt` 默认 tone，私聊/必要 full；
+   - 身份底座（我是谁/主人是谁）tone/full/日常都带；
+   - 日常保存/拆分自动写身份副本；
+   - 角色页一页四层、写法提示、拆分只出预览草稿；
+   - 拆分失败自动 JSON-only 重试，错误带输出预览。
+
+4. **工具面 / 上下文**
+   - `qq_get_context_snapshot`：unread/recent/social/activeMembers，caps/refs/truncated；
+   - `qq_get_prompt` 支持 mode + sections；
+   - `socialV2.toolProfile`：full/balanced/compact，默认 balanced（snapshot 关闭回 full）；
+   - prompt 里 partial/补历史改用 snapshot；
+   - step guard 按 assistant step 计数；
+   - `action-planner`：close 幂等；最近发送失败禁止 close。
+
+5. **UI**
+   - QQ/B站高级设置按功能分类；
+   - 每个参数组改为按钮 + 弹窗，弹窗保存；
+   - 顶部搜索，结果按 `分组 > 字段` 展示并打开对应弹窗；
+   - 设置行悬浮说明；
+   - 群管理/工具面/鱼群/收尾进高级设置。
+
+6. **稳定性 / 用户可解释失败**
+   - SnowLuma 未启动不再弹“断线”L2，只有连过再断才告警；
+   - 会话映射审计：多个 QQ key 共用 sessionId 时全部删除并重建，写 `session-map-duplicate`；
+   - 记忆卡 `act()` 修复 `item is not defined`，reload 提前，toast 不再阻断刷新；
+   - 发送频率/鱼群/Token 发送上限给具体设置、当前值、上限、路径；
+   - 概览「错误报告 / 限制提醒」L1，不弹窗；可去改设置/确认本限制/永久不再显示；
+   - 同一限制 1 小时只提醒一次；永久静音写 `state/limit-mutes.json`。
+
+**关键验证**：
+
+```text
+npm run test:audit -> 107/107
+cd plugins/surfcore && npm test -> 0 失败
+node scripts/release-manifest.mjs --verify-ref HEAD -> 问题 0 个
+```
+
+**重启矩阵**：
+
+| 改动 | 重启 |
+| --- | --- |
+| bridge/group-policy/session/limit/close/step | QQ 桥接 |
+| tool profile / snapshot 工具 / prompt sections / UI | DSH |
+| 人格语气/身份/日常文件 | 下一条消息生效；DSH 重启刷新 UI |
+| SnowLuma 告警 | 桥接 + DSH |
+
+**数据/迁移**：
+
+- 新增 `state/group-policy.json`（可删，回默认自动）；
+- 新增 `state/limit-mutes.json`（可删，恢复限制提醒）；
+- 新增 `persona.tone.md`（可空；旧角色回退场景/日常/核心）；
+- 现有 `persona.daily.md` 保存/拆分时会补身份行；
+- `state/sessions.json` 重复 sessionId 会被启动审计清理，相关上下文重建（警告用户）。
+
+**风险/回滚**：
+
+- 默认 `toolProfile=balanced` 会隐藏旧读工具；不支持时切回 full；
+- 会话审计会删除重复映射，旧串台上下文无法保留；
+- B站仍是一个角色一个会话（`bili-whale-<characterId>`），不是 bug；
+- UI 区域按钮化只覆盖 QQ/B站高级设置；其他 tab 后续继续；
+- 回滚代码：回退到 `a27a1e4` 之前；回滚单项见各 case。
+
+**Case 文档**：
+
+- `docs/cases/2026-10-31-group-tiers-tone.md`
+- `docs/cases/2026-10-31-tool-snapshot-profile.md`
+- `docs/cases/2026-10-31-ui-area-modal.md`
+- `docs/cases/2026-10-31-session-merge.md`
+- `docs/cases/2026-10-31-memory-card-act.md`
+- `docs/cases/2026-10-31-limit-ux.md`
+- `docs/cases/2026-10-31-snowluma-startup-warning.md`
+
+**未验证/残余**：
+
+- 新默认 balanced 未跑真实 30 分钟流量；需发布后观察读工具调用/交付率；
+- Action Planner 仅 close 幂等 + 发送失败禁止 close，wait/mark_read 全状态机未完成；
+- bootstrap 启动模型调用仍偏高；
+- “永久不再显示”暂无恢复 UI，可删 `limit-mutes.json` 的 muted 项；
+- 单条字数/条数上限尚未全部进 L1 错误报告。
+
+
+### 已发布 v0.8.0 · 2026-10-31 16:25 · 群分层 + 人格语气 + 智能拆分
+<!-- release-batch: start=2026-10-31T16:25+08:00 end=2026-10-31T16:45+08:00 commits=a27a1e4,0e3c613,146b0fd,7f25cc2,41b76d4,b0d22ea,65016e1,7037b6c,1560807,b8eb498,b81792f,aff6a18,ca45e8c -->
+
+**覆盖提交**：`a27a1e4`, `0e3c613`, `146b0fd`, `7f25cc2`, `41b76d4`, `b0d22ea`, `65016e1`, `7037b6c`, `1560807`, `b8eb498`, `b81792f`, `aff6a18`, `ca45e8c`
+**建议**：**0.7.27**
+
+**实现**：
+- 新增 `src/group-policy.js`：成员数/近10分钟活跃/手动覆盖 → 小群/大群；
+- 小群保留积极唤醒；大群只保留 @/名字/拍一拍/私聊/管理员；
+- 设置页 QQ → 群分层，显示人数/活跃/自动判定，可强制覆盖；
+- 新增 `persona.tone.md` 语气层；群聊 `qq_get_prompt` 默认 tone，私聊/必要 full；
+- 角色页写法提示 + 智能拆分草稿，用户编辑逐层保存；
+- 下一批：快照工具/批量只读/brief-detail。
+
+**验证**：`test-group-policy`、`test-persona-layers`、`test-persona-classify`、`plugins/surfcore npm test`、`npm run test:audit` 101/101。
+**UI 修正**：群分层移到 QQ 页顶部并加 Token 警示；人格页一页四层、拆分预览草稿；身份底座常驻；场景含 B站等平台 + 隐私警告。
+**交接**：同步 `src/{group-policy,wake-policy,persona-layers,character-persona,bridge}.js`、插件 client/index/persona-classify、测试、docs、manifest。重启 DSH + QQ 桥接。
+
+---
+
+### 批次 2026-10-31 15:55 · 收紧 strict direct
+<!-- release-batch: start=2026-10-31T15:55+08:00 end=2026-10-31T16:15+08:00 commits=32ebe35 -->
+
+**覆盖提交**：`32ebe35`
+**建议**：**0.7.26**
+
+**实现**：
+- 只认真正的 `@昵称` 或引用自己；
+- 裸昵称、owner、fish bypass 不再触发每日配额绕过；
+- 第二轮样本 117 唤醒/13 发送/104 close-only 的漏口；
+- 不改 close/模型/调度。
+
+**验证**：`test-wake-policy`；`npm run test:audit` 99/99。
+**交接**：重启 QQ 桥接后生效；用 `--since` 新窗口对比 question/close-only。
+
+### 追加：工具快照（41b76d4）
+
+- `qq_get_context_snapshot`、`toolProfile`、prompt sections、assistant step 计数、close 幂等；
+- 默认 toolProfile=full，balanced 才隐藏旧读工具；
+- 需要重启 DSH + 桥接。
+
+---
+
+### 批次 2026-10-31 13:55 · question 唤醒闸门
+<!-- release-batch: start=2026-10-31T13:55+08:00 end=2026-10-31T14:15+08:00 commits=fca2e1a -->
+
+**覆盖提交**：`fca2e1a`
+**建议**：**0.7.26**（或与 A+B 一起发 0.7.25）
+
+**实现**：
+- 新增 `src/wake-policy.js`；
+- hard direct 只认 @/名字/拍一拍/私聊/管理员；
+- question 不再绕过 `maxWakesPerDay` / 2 分钟间隔；
+- unread 严格 direct 只认 owner/引用自己/真实 @ 或昵称。
+
+**数据**：一小时 138 唤醒、15 发送、116 close-only；两个群 129 唤醒。
+
+**验证**：`test-wake-policy`；`npm run test:audit` 99/99。
+**交接**：同步 `src/{wake-policy,bridge}.js`、报告 `--since/--until`、测试、docs、manifest。
+重启 QQ 桥接后生效。
+
+---
+
+### 批次 2026-10-31 12:40 · A+B 账单 Markdown
+<!-- release-batch: start=2026-10-31T12:40+08:00 end=2026-10-31T13:00+08:00 commits=534c5e3 -->
+
+**覆盖提交**：`534c5e3`
+**建议**：**0.7.25**（与 Phase 3/4 一起）
+
+**实现**：
+- 角色账单 `billing/characters/<id>/summary.md`；
+- 群/私聊账单 `billing/conversations/*.md`；
+- 索引 `billing/index.md`；
+- 启动 30 秒后生成、每 10 分钟刷新；手动 `node scripts/billing-report.mjs`；
+- 遥测补 `characterId`；群内个人不精确分摊；不含正文；不调用模型。
+
+**验证**：`test-billing-report` / `test-billing-service`；`npm run test:audit` 98/98。
+
+---
+
+### 批次 2026-10-31 12:30 · Phase 4 交付延迟/成本验收（只读）
+<!-- release-batch: start=2026-10-31T12:30+08:00 end=2026-10-31T12:50+08:00 commits=3b1892e -->
+
+**覆盖提交**：`3b1892e`
+**建议**：**0.7.25**（与 Phase 3 一起）
+
+**实现**：
+- 调用链报告新增 `deliveredLatency`（wake→首发送 P50/P90/avg）与 `avgCostDelivered`；
+- 新增 `review.closeOnly` / `review.noSendByReason`；
+- **不改 reasoningEffort、模型、统一调用上限**；
+- 新增 [ARCHITECTURE-DELTA-TOKEN.md](ARCHITECTURE-DELTA-TOKEN.md)：新增模块/闸门/旋钮/排查/回滚。
+
+**当前样本（约 106 wake）**：
+- delivered=24, closed=102, close-only=77, errors=13；
+- model calls/wake p50=2/p90=4/p99=5/max=15；
+- cost/wake=¥0.0447, cost/delivered=¥0.1002；
+- delivered latency p50=3386ms/p90=5272ms。
+
+**未做**：模型/思考强度实验（缺成功率/漏回复指标）；close/keyword 改造。
+
+**case**：[docs/cases/2026-10-31-phase4-acceptance.md](cases/2026-10-31-phase4-acceptance.md)
+**验证**：`node scripts/test-context-call-chain.mjs`；`plugins/surfcore npm test`；`npm run test:audit` 96/96。
+
+---
+
+
+### 批次 2026-10-31 12:00 · Phase 3 backlog 补唤醒限量
+<!-- release-batch: start=2026-10-31T12:00+08:00 end=2026-10-31T12:20+08:00 commits=80120a9 -->
+
+**覆盖提交**：`80120a9`
+**建议**：**0.7.25**（与 Phase 1A 一起）
+
+**需求**：backlog 是 Phase 1A 最贵的唤醒类型（7 次 ¥0.933），启动时不要一次叫醒太多冷会话。
+
+**实现**：
+- 新增 `socialV2.wake.backlogMaxSessions`（1~20，默认 **3**），替换硬编码 5；
+- 启动补唤醒只取未读最多的前 N 个，其余保留 unread 等自然唤醒；
+- 设置页高级设置可调；不合并不同会话上下文、不删消息。
+
+**未做**：keyword 退避、close-only 改造、前后 token 对照、Phase 4 推理强度。
+
+**case**：[docs/cases/2026-10-31-backlog-cap.md](cases/2026-10-31-backlog-cap.md)
+**进度**：[docs/TOKEN-OPTIMIZATION-PROGRESS.md](TOKEN-OPTIMIZATION-PROGRESS.md)
+**验证**：`node scripts/test-backlog-cap.mjs`；`plugins/surfcore npm test`；
+`npm run test:audit` 96/96。
+**交接**：同步 `src/bridge.js`、`plugins/surfcore/lib/client.js`、测试、docs、manifest。
+重启 QQ 桥接后生效。
+
+---
+
+### 批次 2026-10-31 11:30 · Phase 1A 调用链重建（只读）
+<!-- release-batch: start=2026-10-31T11:30+08:00 end=2026-10-31T12:00+08:00 commits=787b48d,cc4805c -->
+
+**覆盖提交**：`787b48d` + `cc4805c`（含前置遥测过滤 `a86aa9b`）
+**建议**：**0.7.25**（若 Phase 0A 遥测已单独作为 0.7.24 发布；否则可合并为 0.7.24）
+
+**需求**：先按 wakeId 重建真实调用链，不改 close/调用上限/调度。
+
+**实现**：
+- bridge 投递 wake 时生成 `wakeId`，QQ 会话事件带 `wakeId` 写入遥测；
+- `scripts/context-call-chain-report.mjs`：bridge/plugin 去重，重建 wake→turn→tool 路径；
+- 报告 delivered/closed/observedOnly/成本/每 wake 模型调用 P50/P90/P99；
+- 不自动 close、不合并唤醒、不设统一调用上限。
+
+**样本（48 wake）**：
+- model calls/wake p50=2/p90=4/p99=11/max=15；
+- delivered 17，closed 44；close-only 26 次/52 调用/¥0.699；
+- backlog 7 次 ¥0.933；keyword 12 次 0 交付；question 15 次仅 4 交付、4 错误。
+
+**未做**：close/wait/send 改造、backlog 合并、任务预算、调度、成功率指标。
+
+**case**：[docs/cases/2026-10-31-call-chain.md](cases/2026-10-31-call-chain.md)
+**验证**：`node scripts/test-context-call-chain.mjs`；`plugins/surfcore npm test`；
+`npm run test:audit` 95/95。
+**交接**：同步 `src/{bridge,context-telemetry}.js`、`scripts/context-call-chain-report.mjs`、
+测试、docs、manifest。重启 QQ 桥接后新数据带 wakeId；旧数据按最近 wake 兜底。
+
+---
+
+### 批次 2026-10-31 10:20 · Phase 0A 上下文/成本遥测（只测量）
+<!-- release-batch: start=2026-10-31T10:20+08:00 end=2026-10-31T10:40+08:00 commits=c7df162 -->
+
+**覆盖提交**：`c7df162`
+**建议**：**0.7.24**（若人格卡分层已作为 0.7.23 发布；否则可与它合并为 0.7.23）
+
+**需求**：先建立真实 token/上下文账单，不改行为。
+
+**实现**：
+- `src/context-telemetry.js` 旁路 JSONL：wake / model usage / tool 结果字符数+耗时 / turn 起止；
+- 插件 `session/event` 采所有会话；bridge 投递 wake 时记录 prompt 总字符与分段；
+- `scripts/context-telemetry-report.mjs` 按唤醒原因/工具聚合基线，标 observed/estimated/覆盖缺口；
+- 不记录消息正文/工具参数；写失败不影响主链路；不改 prompt、工具、guard、会话策略。
+
+**未做**：Phase 1 工具契约/复合快照；系统提示/工具 schema/历史的精确拆分。
+
+**case**：[docs/cases/2026-10-31-context-telemetry.md](cases/2026-10-31-context-telemetry.md)
+**验证**：`node scripts/test-context-telemetry.mjs`；`plugins/surfcore npm test`；
+`npm run test:audit` 94/94。
+**交接**：同步 `src/{context-telemetry,bridge}.js`、`plugins/surfcore/lib/index.js`、
+`scripts/context-telemetry-report.mjs`、测试、docs、manifest。
+重启 DSH + QQ 桥接后开始采集；建议 3–7 天基线再进 Phase 1。
+
+---
+
+### 批次 2026-10-31 10:05 · 人格卡分层（0.7.22 后）
+<!-- release-batch: start=2026-10-31T10:05+08:00 end=2026-10-31T10:35+08:00 commits=bf673a2 -->
+
+**覆盖提交**：`bf673a2`
+**建议**：patch → **0.7.23**
+
+**需求**：人格卡拆成【人格核心】【人格日常】【场景人格】；QQ 分群聊/私聊；
+B站/桌宠各用各的场景；全部手动编辑；角色页醒目说明本次改动。
+
+**实现**：
+- `persona.md` 继续是人格核心；新增可选 `persona.daily.md` 与
+  `persona.scenes/{qq-group,qq-private,bili,pet}.md`；
+- `src/persona-layers.js` 统一组合核心→场景→日常，超预算先裁日常/场景；
+- QQ 按 `group:`/`private:` 选场景；B站/桌宠接同一套分层；
+- `/persona` 三层读写、按层备份恢复；快照/回档带三层；
+- 角色页三层手动编辑 + 顶部醒目说明；模型不自动改写；
+- 记忆卡/向量记忆未动。
+
+**未做**：日常/场景自动生成、任务型 ContextRecipe、记忆分层、缓存收益实测。
+
+**case**：[docs/cases/2026-10-31-persona-layers.md](cases/2026-10-31-persona-layers.md)
+**验证**：`node scripts/test-persona-layers.mjs`；
+`plugins/surfcore/scripts/test-character-api.mjs`；`test-client-contract.mjs`；
+`plugins/surfcore npm test`；`npm run test:audit` 93/93。
+**交接**：同步 `src/{persona-layers,character-persona,bridge}.js`、
+`plugins/surfcore/lib/{index,client,scheduler,pet-chat}.js`、测试、docs、manifest。
+改动后 QQ 下一条消息 / B站下一次醒来 / 桌宠下一次对话生效；真实页面/注入还需手测。
+
+---
+
+### 已发布 v0.7.21 · 2026-10-31 08:10 · 一键启动 SurfCore / 一键停止（0.7.20 后）
+<!-- release-batch: start=2026-10-31T08:10+08:00 end=2026-10-31T08:30+08:00 commits=282dc6c -->
+
+**覆盖提交**：`282dc6c`
+**建议**：patch → **0.7.21**
+
+**需求**：一键启动整合成多选 QQ（含 SnowLuma）/ B站 / 桌宠 / 语音；语音本地/云端单选；
+下面加一键停止；每项显示状态，切换页一致；失败可见且给建议。
+
+**实现**：
+- 概览「一键启动 SurfCore」多选 + 语音分支；「一键停止（全部）」；
+- `start-selected` / `stop-selected`，每项 `ok/code/error/hint`；
+- 停止顺序语音→QQ→B站→桌宠（语音由桥接托管，避免孤儿进程）；
+- `overview.launch` 统一 `bridgeStatus / schedulerStatus / petService / /api/voice/packs`；
+- QQ 停止不关闭 SnowLuma 本体；语音未装/桥接未起/平台开关关闭都有结构化错误。
+
+**未做**：真实进程启停手测、语音页深链、SnowLuma 本体停止（设计边界）。
+
+**case**：[docs/cases/2026-10-31-one-click-launch-stop.md](cases/2026-10-31-one-click-launch-stop.md)
+**验证**：`node scripts/test-launch-components.mjs`；`plugins/surfcore npm test`
+（test-client-contract / test-platform-start-host）；`npm run test:audit` 90/90。
+**交接**：同步 `plugins/surfcore/lib/{index,client}.js`、`scripts/test-launch-components.mjs`、
+`plugins/surfcore/scripts/{test-client-contract,test-platform-start-host}.mjs`、docs、manifest。
+重启 DSH 后页面生效；真实启动/停止需手测。
+
+---
+
+### 已发布 v0.7.20 · 2026-10-30 23:40 · 语音包退出 zip 自动更新
+<!-- release-batch: start=2026-10-30T23:40+08:00 end=2026-10-30T23:50+08:00 commits=44bae2d -->
+
+**覆盖提交**：`44bae2d`
+**建议**：与 SnowLuma 通道闸门一起发 **0.7.20**
+
+**问题**：语音包没有 `package.json`，被登记为 `updates.components()` 的 `kind:auto`，
+下载后按 SurfCore 的 `surfcore-* + package.json + install-manifest` 解析，必然
+`verify.bad-archive`；补 `package.json` 也解决不了根目录/清单/config 保留。
+
+**修法**：
+- 语音包从自动更新列表移除；不再下载/尝试覆盖；
+- 语音页明确“不参与检查更新，需要新版本时用重新导入离线包”，
+  导入保留 config.toml / .venv / models / vendor；
+- 不改公开语音仓库，不写语音包专用 updater。
+
+**case**：[docs/cases/2026-10-30-voice-pack-no-auto-update.md](cases/2026-10-30-voice-pack-no-auto-update.md)
+**验证**：`plugins/surfcore npm test`（test-updates-voice 新增断言）；`npm run test:audit` 89/89。
+**交接**：同步 `plugins/surfcore/lib/index.js`、`plugins/surfcore/lib/client.js`、
+`plugins/surfcore/scripts/test-updates-voice.mjs`、docs、manifest；重启 DSH 后更新列表不再出现语音包。
+
+---
+
+### 已发布 v0.7.20 · 2026-10-30 19:30 · SnowLuma 断线通道闸门
+<!-- release-batch: start=2026-10-30T19:30+08:00 end=2026-10-30T19:50+08:00 commits=44481cc -->
+
+**覆盖提交**：`44481cc`
+**建议**：patch → **0.7.20**（0.7.19 已发布，不重复发）
+
+**问题**：SnowLuma 未启动/掉线时，`proactiveCheck` 仍创建 DSH 会话、跑完整 LLM，
+发送失败只写 bridge.log，每 40–90 分钟重复空烧。
+
+**修法**：
+- `sendWakePromptV2` 开头检查 `qqSendChannelStatus()`：WS 未连接/最近发送失败 →
+  不创建 DSH 会话、不投 prompt、不跑模型；
+- `sendToQQ` / `onebotSend` 记录成功/失败；连续 3 次失败 → 该会话自动唤醒暂停 30 分钟，
+  `scheduleProactiveCheckV2` 不再排下一次；
+- SnowLuma `close` 写 L2 `send-channel-down`，`open` 写 L1 恢复；首次发送失败 L1；
+- UI SnowLuma 安装卡显示 `diagnosis.hint`；事件中心弹窗给“启动/重启 SnowLuma，
+  确认 3000/3001”的建议；
+- 新增 `test-snowluma-channel-gate`（断开/暂停不创建 DSH 会话，恢复后可创建）。
+
+**未做**：首次 HTTP 失败预知、`wasted` 精确金额、端口/进程体检。
+
+**case**：[docs/cases/2026-10-30-snowluma-channel-gate.md](cases/2026-10-30-snowluma-channel-gate.md)
+**验证**：`node scripts/test-snowluma-channel-gate.mjs`；`npm run test:audit` 89/89；
+`plugins/surfcore npm test`；`node scripts/test-audit-bridge.mjs`。
+**交接**：同步 `src/bridge.js`、`src/gate-events.js`、`plugins/surfcore/lib/client.js`、
+`scripts/test-snowluma-channel-gate.mjs`、`scripts/audit-bridge-harness.mjs`、manifest、docs。
+重启 DSH/桥接后生效；真实停 SnowLuma 观察零 token 增长需手测。
+
+---
+
 ### 批次 2026-10-30 17:20 · 闸门事件中心 + 单轮 L3 止血
 <!-- release-batch: start=2026-10-30T17:20+08:00 end=2026-10-30T17:35+08:00 commits=3a82618 -->
 

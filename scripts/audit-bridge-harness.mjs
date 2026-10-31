@@ -20,6 +20,9 @@ import * as modelPrices from '../src/model-prices.js';
 import * as tokenLedger from '../src/token-ledger.js';
 import * as voiceLib from '../src/send-voice-lib.js';
 import * as voiceDiagnostics from '../src/voice-diagnostics.js';
+import * as allowlist from '../src/allowlist.js';
+import * as callname from '../src/callname.js';
+import * as personaIdentity from '../src/persona-identity.js';
 import { synthesizeToFile } from '../src/voice-tts.js';
 import * as presetPrompt from '../src/preset-prompt.js';
 import * as fishGuard from '../src/fish-guard.js';
@@ -31,6 +34,12 @@ import * as adminIdentity from '../src/admin-identity.js';
 import * as questionAnswers from '../src/question-answers.js';
 import * as ownerAudit from '../src/owner-audit.js';
 import * as roleCard from '../src/role-card.js';
+import * as personaLayers from '../src/persona-layers.js';
+import * as wakePolicy from '../src/wake-policy.js';
+import * as groupPolicy from '../src/group-policy.js';
+import * as actionPlanner from '../src/action-planner.js';
+import * as sessionMap from '../src/session-map.js';
+import * as contextTelemetry from '../src/context-telemetry.js';
 import * as memoryCard from '../src/memory-card.js';
 import * as characterStore from '../src/character-persona.js';
 import * as biliCard from '../src/bili-card.js';
@@ -199,6 +208,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     isConversationBusyV2, v2TurnStartAt, turnLeaseNoted, TURN_BUSY_LEASE_MS,
     settingFromDshNamespace, selfIdentityTextV2, buildWakeReminderPromptV2,
     getMode() { return currentMode; },
+    setSnowlumaHealth(patch = {}) { Object.assign(snowlumaHealth, patch); },
     setSelfIdentity(display, id) {
       selfDisplayName = String(display ?? '');
       selfUserId = String(id ?? '');
@@ -243,9 +253,12 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     ...markdown, ...sensitive, ...wait, ...safeFetch, ...forward, ...selfIdentity, ...slang, ...sticker,
     ...modelPrices, ...tokenLedger, ...voiceLib, ...stateAcl, ...presetPrompt, ...fishGuard, ...tokenGuard,
     ...voiceDiagnostics,
+    ...allowlist,
+    ...callname,
+    ...personaIdentity,
     synthesizeToFile,
     ...tokenBudget,
-    ...adminIdentity, ...roleCard, ...memoryCard, ...biliCard, ...characterStore, ...historyCatchup,
+    ...adminIdentity, ...roleCard, ...personaLayers, ...wakePolicy, ...groupPolicy, ...actionPlanner, ...sessionMap, ...contextTelemetry, ...memoryCard, ...biliCard, ...characterStore, ...historyCatchup,
     ...questionAnswers, ...ownerAudit, ...turnGuard, ...gateEvents,
     ...purposeEngine,
     ...conversationClosure,
@@ -253,6 +266,7 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
     // 不能直接用真实 character-store 的 DSH_HOME（它在主进程 import 时已固定）。
     readCurrentCharacter: () => null,
     activePersonaFile: () => '',
+    readPersonaLayerText: () => '',
     activeBiliDir: () => path.join(temp, 'dsh', 'surfcore', 'bili'),
     activePlatformStateDir: (legacyDir) => legacyDir,
     activeMemoryPaths: () => {
@@ -299,6 +313,8 @@ export async function bridgeHarness({ config = {}, savedState, files = {}, globa
   vm.runInContext(`Object.assign(globalThis, (() => { ${modelViewSource}\nreturn { compactModelMessage, compactModelData, serializeModelData }; })());`, context);
   vm.runInContext(source + '\nglobalThis.auditReady = main();', context);
   const bridge = await context.auditReady;
+  // 夹具默认模拟“SnowLuma 已连接”；通道断开用例会显式 setSnowlumaHealth({connected:false})。
+  bridge.setSnowlumaHealth({ connected: true, lastSendOkAt: Date.now(), lastSendFailAt: 0 });
   bridge.setPresets(['standard', 'qq-chat', 'qq-chat-v2']);
   bridge.setReady(true);
   return { ...bridge, calls, temp, async close() {

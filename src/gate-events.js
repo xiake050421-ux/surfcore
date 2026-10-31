@@ -71,6 +71,8 @@ export function classifyGateEvent(event = {}) {
   }
 
   if (kind === 'fault') {
+    if (/restored|recovered/i.test(name)) return 'L1';
+    if (/send-failed/i.test(name)) return 'L1';
     if (/security-unverified|guard-missing|config-corrupt/i.test(name)) return 'L3';
     if (/service-down|bridge-exit|port-conflict|duplicate-process/i.test(name)) return 'L2';
     return 'L2';
@@ -184,9 +186,23 @@ export function createGateEventStore({ dir, log = () => {}, maxBytes = 2 * 1024 
     return { acked: trimmed.length };
   }
 
+  /**
+   * 按 dedupeKey 自动确认（用于「故障已恢复」的场景）：
+   * 比如 SnowLuma 断线事件在重连成功后不该继续弹窗——用户明明连着。
+   * 返回被确认的 id 列表。
+   */
+  function ackByDedupe(dedupeKey) {
+    const key = String(dedupeKey ?? '');
+    if (!key) return [];
+    const { events } = list({ limit: 500, includeAcked: false });
+    const ids = events.filter((row) => row.dedupeKey === key).map((row) => row.id);
+    if (ids.length) ack(ids);
+    return ids;
+  }
+
   function snapshot() {
     return list({ limit: 20 });
   }
 
-  return { file, ackFile, record, list, ack, snapshot };
+  return { file, ackFile, record, list, ack, ackByDedupe, snapshot };
 }

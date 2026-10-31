@@ -165,6 +165,10 @@ const tests = [
   // 语音三闸门 + 配置双写（2026-10-29 复盘）：工具常注册、拒绝带 code/hint、保存带戳防覆盖。
   // 安装清单只能含 git 跟踪文件（2026-10-30：脏清单导致 zip 更新 100% 失败）。
   // 语音失败分类/换路/自检接线（2026-10-30 P0+P1）。
+  // 白名单归一化 + 启动补唤醒（2026-10-31 主人私信被忽略 / 积压不唤醒）。
+  // 称呼按人归属（2026-10-31 主人被叫成对象的称呼）。
+  'test-callname.mjs',
+  'test-allowlist.mjs',
   'test-voice-diagnostics.mjs',
   'test-release-manifest.mjs',
   'test-voice-gates.mjs',
@@ -176,6 +180,39 @@ const tests = [
   'test-plugin-compat.mjs',
   // 闸门事件中心 + 单轮止血：L0-L3 分级、去重/确认、步数/重复错误/预算熔断。
   'test-gate-events.mjs',
+  // SnowLuma 断线/发送失败暂停：主动唤醒不得创建 DSH 会话（零 token）。
+  'test-snowluma-channel-gate.mjs',
+  // 一键启动/停止接线：QQ/B站/桌宠/语音多选、语音本地/云端分支、结构化失败。
+  'test-launch-components.mjs',
+  // 人格卡分层：核心/场景/日常、QQ群聊/私聊、预算裁剪、v1/v2 小节过滤。
+  'test-persona-layers.mjs',
+  // Phase 0A：遥测只读、模型调用去重、工具结果大小、报告聚合。
+  'test-context-telemetry.mjs',
+  // Phase 1A：按 wakeId 归属、bridge/plugin 去重、路径/交付/成本聚合。
+  'test-context-call-chain.mjs',
+  // Phase 3：启动补唤醒限量（默认 3，可配置 1~20）。
+  'test-backlog-cap.mjs',
+  // 唤醒硬直接：question 不再绕过每日配额。
+  'test-wake-policy.mjs',
+  // 群分层：小群积极、大群严格、手动覆盖、设置页。
+  'test-group-policy.mjs',
+  // 上下文快照：合并读取 + brief/caps/refs + tool profile。
+  'test-context-snapshot.mjs',
+  // 会话映射：重复 sessionId 必须全部重建，防止上下文串成一条。
+  'test-session-map.mjs',
+  // 记忆卡手动操作：toast 不能阻断 reload，不能引用 item。
+  'test-memory-card-act.mjs',
+  // 限制失败：结构化错误 + 概览 L1 报告 + 本限制提醒。
+  'test-limit-report.mjs',
+  // Action Planner 第一版：close 幂等；step guard 按 assistant step。
+  'test-action-planner.mjs',
+  // SnowLuma 未启动时不能弹断线告警。
+  'test-snowluma-startup-warning.mjs',
+  // 人格语气/智能拆分：只出草稿，用户编辑保存。
+  'test-persona-classify.mjs',
+  // A+B 账单：角色/会话 Markdown + 自动写入服务。
+  'test-billing-report.mjs',
+  'test-billing-service.mjs',
   // B站分享去重：新鲜池空时不得回退旧素材（2026-10-26 修复的"同一条反复发"）。
   'test-bili-share-dedup.mjs',
 ];

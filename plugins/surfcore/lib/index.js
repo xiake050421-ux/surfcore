@@ -37,7 +37,7 @@ import {
   deleteCharacter, manualSnapshot, migrateIfNeeded, restoreCharacterSnapshot, switchToCharacter,
   updateCharacterFromPayload,
 } from './characters.js';
-import { activeMemoryPaths, activePlatformStateDir, readCurrentCharacter, touchCharacter } from '../../../src/character-persona.js';
+import { activeMemoryPaths, activePersonaLayers, activePlatformStateDir, readCurrentCharacter, touchCharacter } from '../../../src/character-persona.js';
 import { automationSnapshot } from './automation.js';
 import {
   backupFile, listBackups, pathSummary,
@@ -68,6 +68,7 @@ import { startScheduler } from './scheduler.js';
 import { createTokenBudgetService } from './token-budget.js';
 import { scanPluginCompatibility } from './compat.js';
 import { createGateEventStore } from '../../../src/gate-events.js';
+import { normalizeAllowlist } from '../../../src/allowlist.js';
 import { createPetService, detectElectronPath, installElectronRuntime, ELECTRON_VERSION, electronDownloadUrl } from './pet.js';
 import { createPetChatService } from './pet-chat.js';
 import { createPetPurposeService } from './pet-purpose.js';
@@ -91,6 +92,9 @@ import { fishGuardStateSummary } from '../tools/lib/fish-guard.mjs';
 import { summarizeQqFishGuard } from './qq-fish-guard.js';
 import { applySessionPermission } from './scheduler.js';
 import { fileStamp, isStale } from '../../../src/config-stamps.js';
+import { createContextTelemetry } from '../../../src/context-telemetry.js';
+import { createBillingService } from './billing.js';
+import { createPersonaClassifier } from './persona-classify.js';
 
 // 版本号只有一个来源：仓库根 package.json（与 plugins/surfcore/package.json 必须一致，
 // 由 scripts/version.mjs check 与 test-version.mjs 把关）。
@@ -224,6 +228,23 @@ export function apply(ctx) {
   // ── 桌宠（独立栏目，默认不安装；用户自己安装才生效）────────────────────
   const petService = createPetService({ stateDir: STATE_DIR, pluginLog, getSubprocess: () => ctx.get('subprocess') });
   // 桌宠对话与「目的机制」的桌宠载体：和 QQ / B站 共用当前角色的人格卡、记忆卡、目的状态。
+  // Phase 0A：旁路遥测（只读事件，不改 prompt/工具/会话行为）。
+  const contextTelemetry = createContextTelemetry({
+    file: path.join(STATE_DIR, 'context-telemetry-plugin.jsonl'),
+    source: 'plugin',
+    log: (message) => pluginLog(message),
+  });
+  // A+B 账单：每 10 分钟刷新到 ~/.dsh/surfcore/billing；只读，不调用模型。
+  const personaClassifier = createPersonaClassifier({ ctx, log: (message) => pluginLog(message), tokenBudget });
+
+  const billing = createBillingService({
+    stateDir: STATE_DIR,
+    qqRoot: QQBOT_ROOT,
+    readCurrentCharacter,
+    log: (message) => pluginLog(message),
+  });
+  billing.start();
+
   const petChat = createPetChatService({ ctx, stateDir: STATE_DIR, pluginLog, tokenBudget });
   const petPurpose = createPetPurposeService({ chat: petChat, tokenBudget, pluginLog, callBridge });
   const petApi = createPetApiService({
@@ -257,21 +278,11 @@ export function apply(ctx) {
       const updCfg = readUnified().config?.updates ?? {};
       // 1) SurfCore 本体：源码树，走 git
       list.push({ id: 'surfcore', name: 'SurfCore 本体', dir: QQBOT_ROOT, kind: 'git', branch: 'main', versionRepo: String(updCfg.repo ?? '').trim() || 'Mieksido/surfcore' });
-      // 2) 语音包（bridge 管理的安装目录；config.json 的 voicePacks.dir 可覆盖）
-      //    是 git clone 就走 git；不是则看有没有配版本清单（updates.voice.*VersionUrl）
-      try {
-        const qqCfg = readQqConfig().config ?? {};
-        const packsDir = String(qqCfg?.voicePacks?.dir || path.join(QQBOT_ROOT, 'state', 'voice-packs'));
-        const voice = updCfg.voice ?? {};
-        list.push({
-          id: 'surfvoice-local', name: '语音包（本地）', dir: path.join(packsDir, 'voice-local'),
-          kind: 'auto', branch: 'main', versionUrl: voice.localVersionUrl || '', versionRepo: 'Mieksido/surfvoicelocal',
-        });
-        list.push({
-          id: 'surfvoice-cloud', name: '语音包（云端）', dir: path.join(packsDir, 'voice-cloud'),
-          kind: 'auto', branch: 'main', versionUrl: voice.cloudVersionUrl || '', versionRepo: 'Mieksido/surfvoicecloud',
-        });
-      } catch {}
+      // 2) 语音包**不进入自动更新列表**：它是离线运行时/模型/vendor 包，
+      //    不是 SurfCore 那种代码 zip；统一 updateFromZip 会按 surfcore-* + package.json
+      //    解析而必然失败（2026-10-30 用户反馈）。需要新包时在「语音」页重新导入离线包，
+      //    由 voice-pack-import 保留 config.toml / .venv / models / vendor。
+      //    语音包自己的 version.json / models.json 仍由语音页/包管理读取。
       // 3) 桌宠：构建产物，走版本清单（zip 安装包）；更新交给 petService.updateFromZip（保留 data/）
       try {
         const st = petService.status();
@@ -313,6 +324,9 @@ export function apply(ctx) {
       sessionEventOff = ctx.on('session/event', (session, event) => {
         try { tokenBudget.ingestEvent(session, event); }
         catch (error) { pluginLog('token 用量采集失败：', String(error?.message ?? error).slice(0, 160)); }
+        try {
+          if (tokenBudget.isTrackedSession(session)) contextTelemetry.ingestEvent(session, event);
+        } catch (error) { pluginLog('上下文遥测失败：', String(error?.message ?? error).slice(0, 160)); }
       });
     }
   } catch (error) {
@@ -418,6 +432,16 @@ export function apply(ctx) {
       pluginLog('生物钟启动失败：', schedulerStatus.lastError);
     }
     return schedulerStatus;
+  }
+  function stopSchedulerNow() {
+    const wasRunning = Boolean(scheduler && schedulerStatus.running);
+    try { scheduler?.stop?.(); } catch (error) {
+      pluginLog('生物钟停止失败：', String(error?.message ?? error));
+    }
+    scheduler = null;
+    schedulerStatus = { running: false, startedAt: null, lastError: null, lastTickAt: null };
+    if (wasRunning) pluginLog('生物钟已停止');
+    return { ok: true, wasRunning, scheduler: schedulerStatus };
   }
   startSchedulerNow();
 
@@ -756,11 +780,13 @@ export function apply(ctx) {
       // 组件更新：概览「更新」卡与启动弹窗都读它（检查结果是缓存的，不在这里触发网络）。
       updates: updates.status(),
       scheduler: schedulerStatus,
+      launch: await launchStatus(),
       snowluma: {
         launcherPath: String(snow.launcherPath ?? ''),
         allowLaunch: snow.allowLaunch === true,
         downloadUrl: String(snow.downloadUrl ?? 'https://github.com/SnowLuma/SnowLuma/releases/latest'),
         detected: findSnowLumaInstall().ok,
+        everConnected: bridge?.snowluma?.everConnected === true,
         diagnosis: snowDiag,
       },
       mode: {
@@ -862,6 +888,12 @@ export function apply(ctx) {
     body.bili = planned.bili;
     body.unified = planned.unified;
     if (body.qq && typeof body.qq === 'object') {
+      if (body.qq.allow && typeof body.qq.allow === 'object') {
+        const ownerForAllow = planned.unified?.admin?.qq || readQqConfig().config?.ownerQQ || '';
+        const { allow, warnings } = normalizeAllowlist({ allow: body.qq.allow, ownerQQ: ownerForAllow });
+        body.qq.allow = allow;
+        for (const w of warnings) result.warnings.push(`白名单：${w.message}`);
+      }
       const saved = saveQqConfig(body.qq);
       result.saved.qq = true;
       result.qq = saved.config;
@@ -1065,18 +1097,127 @@ export function apply(ctx) {
   }
 
   // ── 人设卡 ──────────────────────────────────────────────────────────────
+  async function handleGroupPolicy(req, res) {
+    try {
+      if (req.method === 'GET') {
+        const r = await callBridge('/api/socialV2/group-policy');
+        if (!r.ok) {
+          json(res, 502, { ok: false, code: 'GROUP_POLICY_BRIDGE', error: r.error || '桥接不可用', hint: '先启动 QQ 桥接，再刷新设置页' });
+          return;
+        }
+        json(res, 200, r.data);
+        return;
+      }
+      if (req.method === 'POST') {
+        const body = JSON.parse(await readBody(req) || '{}');
+        const r = await callBridge('/api/socialV2/group-policy', { method: 'POST', body });
+        if (!r.ok) {
+          json(res, 502, { ok: false, code: 'GROUP_POLICY_SAVE', error: r.error || '保存失败', hint: '检查桥接是否运行，再重试' });
+          return;
+        }
+        json(res, 200, r.data);
+        return;
+      }
+      json(res, 405, { ok: false, code: 'GROUP_POLICY_METHOD', error: '只支持 GET/POST' });
+    } catch (error) {
+      json(res, 400, { ok: false, code: 'GROUP_POLICY_FAILED', error: String(error?.message ?? error), hint: '检查桥接与配置' });
+    }
+  }
+
+  async function handlePersonaClassify(req, res) {
+    if (req.method !== 'POST') {
+      json(res, 405, { ok: false, code: 'PERSONA_CLASSIFY_METHOD', error: '只支持 POST', hint: '用角色页的「智能拆分」按钮' });
+      return;
+    }
+    try {
+      const body = JSON.parse(await readBody(req) || '{}');
+      let text = String(body.text ?? '');
+    if (layer === 'daily') text = withDailyIdentity(text);
+      const drafts = await personaClassifier.classify(text);
+      drafts.daily = withDailyIdentity(drafts.daily);
+      json(res, 200, { ok: true, drafts, note: '这是草稿；请检查/编辑后逐层保存。' });
+    } catch (error) {
+      json(res, 400, {
+        ok: false,
+        code: String(error?.code || 'PERSONA_CLASSIFY_FAILED'),
+        error: String(error?.message ?? error),
+        hint: String(error?.code || '').includes('UNAVAILABLE')
+          ? '确认 DSH 模型服务已就绪；也可以手动填写各层'
+          : '检查人格卡内容，或手动填写各层',
+      });
+    }
+  }
+
+  function personaIdentityLine() {
+    const cur = readCurrentCharacter();
+    const name = String(cur?.name || '').trim() || '这个角色';
+    let admin = {};
+    try {
+      const unified = readUnified();
+      const qq = readQqConfig();
+      admin = adminSummary(unified?.config?.admin ?? qq?.config?.admin);
+    } catch {}
+    const owner = String(admin?.displayName || '').trim() || '主人';
+    return `你是${name}；你的主人是${owner}。`;
+  }
+
+  function withDailyIdentity(text, identity = personaIdentityLine()) {
+    const body = String(text ?? '').trim();
+    if (!body) return identity;
+    if (body.includes(identity)) return body;
+    // 已有明确“我是谁/主人是谁”的旧日常也保留，不重复堆。
+    if (/你是|我是/.test(body) && /主人/.test(body)) return body;
+    return `${identity}
+
+${body}`;
+  }
+
+  async function handleLimitMute(req, res) {
+    if (req.method !== 'POST') { json(res, 405, { ok: false, code: 'LIMIT_MUTE_METHOD', error: '只支持 POST' }); return; }
+    try {
+      const body = JSON.parse(await readBody(req) || '{}');
+      const r = await callBridge('/api/socialV2/limit-mute', { method: 'POST', body });
+      if (!r.ok) { json(res, 502, { ok: false, code: 'LIMIT_MUTE_BRIDGE', error: r.error || '桥接不可用', hint: '先启动/重启 QQ 桥接' }); return; }
+      json(res, 200, r.data);
+    } catch (error) {
+      json(res, 400, { ok: false, code: 'LIMIT_MUTE_FAILED', error: String(error?.message ?? error), hint: '刷新错误报告后重试' });
+    }
+  }
+
   async function handlePersona(req, res) {
+    const layerPaths = () => {
+      const layers = activePersonaLayers();
+      return layers ? {
+        core: resolvePersonaFile(),
+        daily: layers.daily,
+        scenes: layers.scenes,
+        scenesDir: layers.scenesDir,
+      } : { core: resolvePersonaFile(), daily: '', tone: '', scenes: {}, scenesDir: '' };
+    };
+    const sceneLabels = { 'qq-group': 'QQ 群聊', 'qq-private': 'QQ 私聊', bili: 'B站', pet: '桌宠' };
     if (req.method === 'GET') {
-      const text = readTextFile(resolvePersonaFile());
-      const backups = listBackups(80).filter((item) => item.name.startsWith('persona-'));
+      const paths = layerPaths();
+      const core = readTextFile(paths.core);
+      const daily = paths.daily ? withDailyIdentity(readTextFile(paths.daily)) : withDailyIdentity('');
+      const scenes = {};
+      for (const [id, file] of Object.entries(paths.scenes || {})) {
+        scenes[id] = { path: file, text: readTextFile(file), chars: readTextFile(file).length };
+      }
+      const backups = listBackups(120).filter((item) => /^persona(?:-|$)/.test(item.name));
       json(res, 200, {
         ok: true,
-        path: resolvePersonaFile(),
-        text,
-        chars: text.length,
-        mtime: mtimeIso(resolvePersonaFile()),
+        path: paths.core,
+        text: core,
+        chars: core.length,
+        mtime: mtimeIso(paths.core),
+        layers: {
+          core: { path: paths.core, text: core, chars: core.length },
+          daily: { path: paths.daily, text: daily, chars: daily.length },
+          scenes,
+        },
+        sceneLabels,
         backups,
-        note: 'QQ 与 B站共用这一张人设卡；B站 AGENTS.md 只保留日子/流程，不另立人格。',
+        note: '人格卡分层：persona.md 是核心；persona.tone.md 是语气；persona.daily.md 是日常；persona.scenes/* 是场景。所有层都手动编辑，不会自动改写。',
       });
       return;
     }
@@ -1085,30 +1226,63 @@ export function apply(ctx) {
       const name = safeBackupName(body.name);
       if (!name) { json(res, 400, { ok: false, error: '备份名非法' }); return; }
       const source = path.join(BACKUP_DIR, name);
-      if (!fs.existsSync(source)) { json(res, 404, { ok: false, error: '备份不存在' }); return; }
-      backupFile(resolvePersonaFile(), 'persona');
-      fs.copyFileSync(source, resolvePersonaFile());
+      if (!fs.existsSync(source)) { json(res, 404, { ok: false, code: 'PERSONA_BACKUP_MISSING', error: '备份不存在', hint: '刷新备份列表后重试' }); return; }
+      const paths = layerPaths();
+      let target = paths.core;
+      let label = 'persona';
+      if (name.startsWith('persona-daily-')) { target = paths.daily; label = 'persona-daily'; }
+      else if (name.startsWith('persona-tone-')) { target = paths.tone; label = 'persona-tone'; }
+      else if (name.startsWith('persona-scene-')) {
+        const scene = Object.keys(sceneLabels).find((id) => name.startsWith(`persona-scene-${id}-`));
+        if (!scene) { json(res, 400, { ok: false, code: 'PERSONA_SCENE_UNKNOWN', error: '备份对应的场景未知', hint: '检查备份文件名' }); return; }
+        target = paths.scenes?.[scene] || '';
+        label = `persona-scene-${scene}`;
+      }
+      if (!target) { json(res, 400, { ok: false, code: 'PERSONA_LAYER_UNAVAILABLE', error: '这个层在当前角色里没有路径（可能未启用角色系统）', hint: '先创建/加载角色' }); return; }
+      backupFile(target, label);
+      fs.copyFileSync(source, target);
       const cur = readCurrentCharacter();
       if (cur) touchCharacter(cur.id);
-      json(res, 200, { ok: true, restored: name, text: readTextFile(resolvePersonaFile()) });
+      json(res, 200, { ok: true, restored: name, target, text: readTextFile(target), layers: layerPaths() });
+      return;
+    }
+    const layer = String(body.layer || 'core');
+    const scene = String(body.scene || '');
+    const paths = layerPaths();
+    let target = paths.core;
+    let label = 'persona';
+    if (layer === 'daily') {
+      target = paths.daily;
+      label = 'persona-daily';
+    } else if (layer === 'scene') {
+      if (!sceneLabels[scene]) { json(res, 400, { ok: false, code: 'PERSONA_SCENE_UNKNOWN', error: `未知场景：${scene}`, hint: '只支持 qq-group / qq-private / bili / pet' }); return; }
+      target = paths.scenes?.[scene] || '';
+      label = `persona-scene-${scene}`;
+    }
+    if (!target) {
+      json(res, 400, { ok: false, code: 'PERSONA_LAYER_UNAVAILABLE', error: '这个层在当前角色里没有路径（可能未启用角色系统）', hint: '先创建/加载角色' });
       return;
     }
     const text = String(body.text ?? '');
-    if (text.length < 50) { json(res, 400, { ok: false, error: '人设卡太短（至少 50 字）' }); return; }
-    if (text.length > 64 * 1024) { json(res, 400, { ok: false, error: '人设卡超过 64KB' }); return; }
+    if (layer === 'core' && text.length < 50) { json(res, 400, { ok: false, code: 'PERSONA_CORE_TOO_SHORT', error: '人格核心太短（至少 50 字）', hint: '核心卡是每次注入的底座，不能留空' }); return; }
+    if (text.length > 64 * 1024) { json(res, 400, { ok: false, code: 'PERSONA_TOO_LARGE', error: '人格内容超过 64KB', hint: '拆成核心/场景/日常层，或精简内容' }); return; }
     const scan = scanText(text);
-    // 人设卡允许出现 QQ 号（称呼表/身份说明本来就需要），但绝不允许密钥、密码、
-    // 身份证/银行卡/住址这类真正敏感的内容被写进每次注入的人格提示词。
     const severe = scan.secrets.length > 0 || scan.pii.some((hit) => hit.severe);
     if (severe) {
-      json(res, 400, { ok: false, error: '人设卡里命中密钥/密码/身份证/住址规则，拒绝保存', labels: [...new Set([...scan.secrets, ...scan.pii.filter((h) => h.severe)].map((h) => h.label))] });
+      json(res, 400, {
+        ok: false,
+        code: 'PERSONA_SENSITIVE',
+        error: '人格内容里命中密钥/密码/身份证/住址规则，拒绝保存',
+        hint: '删掉这些内容后再保存；人格卡不应包含凭据',
+        labels: [...new Set([...scan.secrets, ...scan.pii.filter((h) => h.severe)].map((h) => h.label))],
+      });
       return;
     }
-    const backup = backupFile(resolvePersonaFile(), 'persona');
-    writeTextAtomic(resolvePersonaFile(), text.endsWith('\n') ? text : `${text}\n`);
+    const backup = backupFile(target, label);
+        writeTextAtomic(target, text.endsWith('\n') ? text : `${text}\n`);
     const cur = readCurrentCharacter();
     if (cur) touchCharacter(cur.id);
-    json(res, 200, { ok: true, chars: text.length, backup, path: resolvePersonaFile() });
+    json(res, 200, { ok: true, layer, scene: layer === 'scene' ? scene : '', chars: text.length, backup, path: target, layers: layerPaths() });
   }
 
   // ── 记忆 ────────────────────────────────────────────────────────────────
@@ -1433,9 +1607,14 @@ export function apply(ctx) {
       // 5) 主人 + 白名单
       const idStep = installStep('identity', '写入主人 QQ 与白名单');
       if (opts.groups.length) {
-        const priv = opts.ownerQQ ? [opts.ownerQQ] : [];
-        saveQqConfig({ allow: { groups: opts.groups, private: priv } });
-        done(idStep, true, `${opts.groups.length} 个群${opts.ownerQQ ? ' + 主人私聊' : ''}`);
+        // 保留用户已有私聊白名单，只追加主人（2026-10-31：以前 [owner] 整体替换会冲掉用户加的人）
+        const { allow, warnings } = normalizeAllowlist({
+          allow: { ...(readQqConfig().config?.allow ?? {}), groups: opts.groups },
+          ownerQQ: opts.ownerQQ,
+        });
+        saveQqConfig({ allow });
+        for (const w of warnings) pluginLog(`[安装] 白名单：${w.code} ${w.message}`);
+        done(idStep, true, `${opts.groups.length} 个群${opts.ownerQQ ? ' + 主人私聊' : ''}${warnings.length ? `（${warnings.length} 条修正）` : ''}`);
       } else {
         done(idStep, true, '没选群，跳过（之后在设置 → QQ → 白名单里加）');
       }
@@ -1619,9 +1798,14 @@ export function apply(ctx) {
         .map((g) => String(g ?? '').trim())
         .filter((g) => /^\d{5,15}$/.test(g));
       if (body.applyGroups && groups.length) {
-        const priv = owner ? [owner] : (Array.isArray(cfg.allow?.private) ? cfg.allow.private : []);
-        saveQqConfig({ allow: { groups, private: priv } });
-        changed.push(`写入白名单（${groups.length} 个群${owner ? ' + 主人私聊' : ''}）`);
+        // 同样保留现有私聊白名单（2026-10-31 反馈：安装/诊断修复后用户加的人丢失）
+        const { allow, warnings } = normalizeAllowlist({
+          allow: { ...(cfg.allow ?? {}), groups },
+          ownerQQ: owner || cfg.ownerQQ || '',
+        });
+        saveQqConfig({ allow });
+        for (const w of warnings) pluginLog(`[install-apply] 白名单：${w.code} ${w.message}`);
+        changed.push(`写入白名单（${groups.length} 个群${owner ? ' + 主人私聊' : ''}${warnings.length ? `，${warnings.length} 条修正` : ''}）`);
       }
       // 4) 配置骨架 / 控制台令牌
       for (const action of doctorFix({ ownerQQ: owner })) {
@@ -1652,7 +1836,7 @@ export function apply(ctx) {
       const name = safeBackupName(body.name);
       if (!name) { json(res, 400, { ok: false, error: '备份名非法' }); return; }
       const source = path.join(BACKUP_DIR, name);
-      if (!fs.existsSync(source)) { json(res, 404, { ok: false, error: '备份不存在' }); return; }
+      if (!fs.existsSync(source)) { json(res, 404, { ok: false, code: 'PERSONA_BACKUP_MISSING', error: '备份不存在', hint: '刷新备份列表后重试' }); return; }
       const map = [
         ['qq-config-', QQ_CONFIG], ['bili-config-', BILI_CONFIG], ['unified-config-', path.join(STATE_DIR, 'config.json')],
         ['persona-', resolvePersonaFile()], ['alignments-', ALIGN_FILE],
@@ -2306,6 +2490,208 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     }
   }
 
+  // ── 一键启动 / 停止（概览、QQ、B站、桌宠、语音共用同一份状态）────────────
+  const LAUNCH_IDS = ['qq', 'bili', 'pet', 'voice'];
+  const LAUNCH_LABELS = { qq: 'QQ（含 SnowLuma）', bili: 'B站', pet: '桌宠', voice: '语音' };
+
+  function normalizeLaunchComponents(input) {
+    const list = Array.isArray(input) ? input : [];
+    const picked = list.map((x) => String(x)).filter((x) => LAUNCH_IDS.includes(x));
+    return [...new Set(picked)];
+  }
+
+  async function voicePacksSnapshot() {
+    const bridge = await bridgeStatus().catch(() => ({ running: false }));
+    if (!bridge.running) return { ok: false, running: false, packs: [], error: 'QQ 桥接未运行，无法读取语音包状态', code: 'VOICE_BRIDGE_DOWN' };
+    try {
+      const r = await callBridge('/api/voice/packs', { timeoutMs: 8000 });
+      const packs = Array.isArray(r?.data?.packs) ? r.data.packs : [];
+      const running = packs.find((p) => p.running) || null;
+      return { ok: true, running: Boolean(running), id: running?.id || '', packs, bridge };
+    } catch (error) {
+      return { ok: false, running: false, packs: [], bridge, error: `读取语音包状态失败：${String(error?.message ?? error).slice(0, 160)}`, code: 'VOICE_STATUS_FAILED' };
+    }
+  }
+
+  async function launchStatus() {
+    const bridge = await bridgeStatus().catch((error) => ({ running: false, error: String(error?.message ?? error) }));
+    let voice = { ok: false, running: false, packs: [], id: '', error: bridge.running ? '' : 'QQ 桥接未运行' };
+    if (bridge.running) voice = await voicePacksSnapshot();
+    const pet = petService.status();
+    return {
+      qq: {
+        running: Boolean(bridge.running),
+        ok: Boolean(bridge.running && bridge.ok !== false),
+        port: bridge.port ?? null,
+        pid: bridge.pid ?? bridge.lockPid ?? null,
+        snowluma: bridge.snowluma ?? null,
+        lastError: bridge.error ?? null,
+      },
+      bili: {
+        running: Boolean(scheduler && schedulerStatus.running),
+        lastError: schedulerStatus.lastError ?? null,
+        reason: schedulerStatus.reason ?? '',
+      },
+      pet: {
+        running: Boolean(pet.running),
+        installed: Boolean(pet.installed),
+        pid: pet.pid ?? null,
+        lastError: pet.lastError ?? null,
+      },
+      voice: {
+        ok: voice.ok !== false,
+        running: Boolean(voice.running),
+        id: voice.id || '',
+        installed: (voice.packs ?? []).filter((p) => p.installed).map((p) => p.id),
+        packs: (voice.packs ?? []).map((p) => ({ id: p.id, installed: Boolean(p.installed), running: Boolean(p.running), name: p.name || p.id })),
+        lastError: voice.error || null,
+      },
+    };
+  }
+
+  function launchItem(id, ok, extra = {}) {
+    return { id, label: LAUNCH_LABELS[id] || id, ok: ok !== false, ...extra };
+  }
+
+  async function startComponent(id, opts = {}) {
+    try {
+      if (id === 'qq') {
+        if (!platformStartEnabled('qq')) {
+          return launchItem(id, false, { code: 'PLATFORM_DISABLED', error: 'QQ 启动开关已关闭', hint: '去「QQ」页打开「启动 QQ」并保存' });
+        }
+        const status = await bridgeStatus();
+        const stale = bridgeStaleReason(status);
+        const bridge = stale ? await restartBridge({ dshWebUrl: currentDshUrl() }) : await startBridge({ dshWebUrl: currentDshUrl() });
+        const snowluma = await launchSnowLuma().catch((error) => ({ ok: false, error: String(error?.message ?? error), hint: '检查 SnowLuma 安装目录/允许插件打开设置' }));
+        const bridgeOk = bridge?.ok !== false;
+        const snowOk = snowluma?.ok !== false || snowluma?.skipped === true || snowluma?.already === true;
+        return launchItem(id, bridgeOk && snowOk, {
+          message: [bridge?.message, snowluma?.message || snowluma?.error].filter(Boolean).join('；'),
+          code: bridgeOk && snowOk ? '' : 'QQ_START_PARTIAL',
+          error: bridgeOk ? (snowOk ? '' : `QQ 桥接已启动，但 SnowLuma 未打开：${snowluma?.error || '未知原因'}`) : (bridge?.error || bridge?.message || 'QQ 桥接启动失败'),
+          hint: bridgeOk ? (snowOk ? '' : (snowluma?.hint || '启动 SnowLuma（launcher.bat）并确认端口 3000/3001')) : '检查桥接日志/端口；必要时重启 DSH',
+          detail: { bridge, snowluma },
+        });
+      }
+      if (id === 'bili') {
+        if (!platformStartEnabled('bili')) {
+          return launchItem(id, false, { code: 'PLATFORM_DISABLED', error: 'B站 启动开关已关闭', hint: '去「B站」页打开「启动 B站」并保存' });
+        }
+        const state = startSchedulerNow();
+        return launchItem(id, state.running === true, {
+          code: state.running ? '' : 'BILI_START_FAILED',
+          error: state.running ? '' : `B站生物钟未启动：${state.reason || state.lastError || '未登录或配置缺失'}`,
+          hint: state.running ? '' : '先在「B站」页完成扫码登录；仍失败看插件日志',
+          detail: state,
+        });
+      }
+      if (id === 'pet') {
+        const result = await petService.start();
+        return launchItem(id, result?.ok !== false, {
+          code: result?.ok === false ? 'PET_START_FAILED' : '',
+          error: result?.ok === false ? (result.error || '桌宠启动失败') : '',
+          hint: result?.ok === false ? (result.hint || '先在「桌宠」页安装桌宠/Electron') : '',
+          detail: result,
+        });
+      }
+      if (id === 'voice') {
+        const bridge = await bridgeStatus().catch(() => ({ running: false }));
+        if (!bridge.running) {
+          return launchItem(id, false, { code: 'VOICE_BRIDGE_DOWN', error: '语音包由 QQ 桥接托管，桥接未运行', hint: '同时勾选「QQ（含 SnowLuma）」或先启动 QQ' });
+        }
+        const packs = await voicePacksSnapshot();
+        const wanted = String(opts.voicePack === 'voice-cloud' ? 'voice-cloud' : 'voice-local');
+        const pack = (packs.packs ?? []).find((p) => p.id === wanted);
+        if (!pack) return launchItem(id, false, { code: 'VOICE_PACK_UNKNOWN', error: `未知语音包：${wanted}`, hint: '在「语音」页确认包 ID' });
+        if (!pack.installed) return launchItem(id, false, { code: 'VOICE_PACK_NOT_INSTALLED', error: `${pack.name || wanted} 还没安装`, hint: '先在「语音」页导入离线包或安装语音包' });
+        const r = await callBridge('/api/voice/packs/activate', { method: 'POST', body: { id: wanted }, timeoutMs: 90_000 });
+        const data = r?.data ?? {};
+        return launchItem(id, r?.ok !== false && data.ok !== false, {
+          code: data.ok === false ? 'VOICE_START_FAILED' : '',
+          error: data.ok === false ? (data.error || '语音包启动失败') : '',
+          hint: data.ok === false ? (data.hint || '检查语音包是否装好、端口 8765/8767 是否被占用') : '',
+          detail: { packId: wanted, ...data },
+        });
+      }
+      return launchItem(id, false, { code: 'UNKNOWN_COMPONENT', error: `未知启动项：${id}` });
+    } catch (error) {
+      return launchItem(id, false, {
+        code: `${String(id).toUpperCase()}_START_FAILED`,
+        error: `${LAUNCH_LABELS[id] || id} 启动失败：${String(error?.message ?? error).slice(0, 300)}`,
+        hint: '看设置页状态/日志；修复后重试',
+      });
+    }
+  }
+
+  async function stopComponent(id, opts = {}) {
+    try {
+      if (id === 'qq') {
+        const r = await stopBridge();
+        return launchItem(id, r?.ok !== false, {
+          message: 'QQ 桥接已停止（SnowLuma 本体不会被本程序关闭）',
+          code: r?.ok === false ? 'QQ_STOP_FAILED' : '',
+          error: r?.ok === false ? (r.error || 'QQ 桥接停止失败') : '',
+          hint: r?.ok === false ? '看桥接日志/手动结束残留进程' : '',
+          detail: r,
+        });
+      }
+      if (id === 'bili') {
+        const r = stopSchedulerNow();
+        return launchItem(id, true, { message: r.wasRunning ? 'B站生物钟已停止' : 'B站生物钟本来就没在跑', detail: r });
+      }
+      if (id === 'pet') {
+        const r = await petService.stop();
+        return launchItem(id, r?.ok !== false, {
+          code: r?.ok === false ? 'PET_STOP_FAILED' : '',
+          error: r?.ok === false ? (r.error || '桌宠停止失败') : '',
+          hint: r?.ok === false ? '在「桌宠」页重试，或手动结束进程' : '',
+          detail: r,
+        });
+      }
+      if (id === 'voice') {
+        const bridge = await bridgeStatus().catch(() => ({ running: false }));
+        if (!bridge.running) return launchItem(id, true, { message: 'QQ 桥接未运行，语音包无需单独停止' });
+        const packs = await voicePacksSnapshot();
+        const running = (packs.packs ?? []).filter((p) => p.running);
+        if (!running.length) return launchItem(id, true, { message: '语音包本来就没在跑' });
+        const results = [];
+        for (const p of running) {
+          const r = await callBridge('/api/voice/packs/stop', { method: 'POST', body: { id: p.id }, timeoutMs: 30_000 });
+          results.push({ id: p.id, ok: r?.ok !== false && r?.data?.ok !== false, error: r?.data?.error || r?.error || '' });
+        }
+        const failed = results.find((x) => !x.ok);
+        return launchItem(id, !failed, {
+          code: failed ? 'VOICE_STOP_FAILED' : '',
+          error: failed ? (failed.error || `语音包 ${failed.id} 停止失败`) : '',
+          hint: failed ? '检查端口占用；必要时在「语音」页手动停止' : '',
+          detail: results,
+        });
+      }
+      return launchItem(id, false, { code: 'UNKNOWN_COMPONENT', error: `未知停止项：${id}` });
+    } catch (error) {
+      return launchItem(id, false, {
+        code: `${String(id).toUpperCase()}_STOP_FAILED`,
+        error: `${LAUNCH_LABELS[id] || id} 停止失败：${String(error?.message ?? error).slice(0, 300)}`,
+        hint: '看设置页状态/日志；必要时手动结束进程',
+      });
+    }
+  }
+
+  async function runLaunchAction(action, body) {
+    const ids = normalizeLaunchComponents(body.components);
+    if (!ids.length) {
+      return { ok: false, code: 'NO_COMPONENTS', error: '没有选择要启动/停止的项目', hint: '至少勾选一项', items: [], status: await launchStatus() };
+    }
+    const items = [];
+    // 停止时先停语音（它由 QQ 桥接托管），再停桥接；否则桥接先死，语音进程会变成孤儿。
+    const ordered = action === 'stop' ? ['voice', 'qq', 'bili', 'pet'].filter((id) => ids.includes(id)) : ids;
+    for (const id of ordered) {
+      items.push(action === 'stop' ? await stopComponent(id, body) : await startComponent(id, body));
+    }
+    const status = await launchStatus();
+    return { ok: items.every((x) => x.ok), items, status };
+  }
+
   async function handleBridge(req, res) {
     if (req.method === 'GET') { json(res, 200, { ok: true, status: await bridgeStatus() }); return; }
     const body = JSON.parse(await readBody(req) || '{}');
@@ -2347,6 +2733,14 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
         message: running ? 'B站生物钟本来就在跑' : (schedulerState.running ? 'B站生物钟已启动' : `B站生物钟未启动：${schedulerState.lastError ?? '看插件日志'}`),
         scheduler: schedulerState,
       });
+      return;
+    }
+    if (action === 'start-selected' || action === 'start-components') {
+      json(res, 200, await runLaunchAction('start', body));
+      return;
+    }
+    if (action === 'stop-selected' || action === 'stop-components') {
+      json(res, 200, await runLaunchAction('stop', body));
       return;
     }
     if (action === 'start-all') {
@@ -2955,6 +3349,9 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (pathname === `${API_PREFIX}/config`) { await handleConfig(req, res); return; }
     if (pathname === `${API_PREFIX}/characters`) { await handleCharacters(req, res, url); return; }
     if (pathname === `${API_PREFIX}/persona`) { await handlePersona(req, res); return; }
+    if (pathname === `${API_PREFIX}/limit-mute`) { await handleLimitMute(req, res); return; }
+    if (pathname === `${API_PREFIX}/persona/classify`) { await handlePersonaClassify(req, res); return; }
+    if (pathname === `${API_PREFIX}/group-policy`) { await handleGroupPolicy(req, res); return; }
     if (pathname === `${API_PREFIX}/memory`) { await handleMemory(req, res, url); return; }
     if (pathname === `${API_PREFIX}/watch-history`) { handleWatchHistory(res, url); return; }
     if (pathname === `${API_PREFIX}/preferences/scan`) {
@@ -3106,6 +3503,7 @@ if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { ${writeOut('$
     if (petHostTimer) clearInterval(petHostTimer);
     try { sessionEventOff?.(); } catch {}
     try { petAlertOff?.(); } catch {}
+    try { billing.dispose(); } catch {}
     try { tokenBudget.dispose(); } catch {}
     try { memoryCardTimer?.stop?.(); } catch {}
     try { closeAllQrLogins(); } catch {}

@@ -146,7 +146,8 @@ console.log('## MCP 工具与 bridge 路由');
   ok(mcp.includes("'qq_list_voices'"), 'MCP 注册 qq_list_voices');
   ok(mcp.includes("qq_send_voice: 'sendVoice'"), 'qq_send_voice 受 sendVoice 开关控制');
   ok(mcp.includes("qq_list_voices: 'sendVoice'"), 'qq_list_voices 受 sendVoice 开关控制');
-  const voiceBlock = mcp.slice(mcp.indexOf("'qq_send_voice'"), mcp.indexOf("'qq_list_voices'"));
+  const voiceStart = mcp.lastIndexOf("'qq_send_voice'");
+  const voiceBlock = mcp.slice(voiceStart, mcp.indexOf("'qq_list_voices'", voiceStart));
   ok(voiceBlock.includes('/api/socialV2/send-voice'), 'qq_send_voice 调 /api/socialV2/send-voice');
   ok(!voiceBlock.includes("绝对路径的音频"), 'qq_send_voice 不暴露绝对路径参数');
 

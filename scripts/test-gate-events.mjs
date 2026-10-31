@@ -58,8 +58,8 @@ try {
   turn.end('s1');
 
   turn.begin('s2', 'group:1');
-  assert.equal(turn.noteToolError('s2', 'compress', 'not allowed 1'), null);
-  const repeated = turn.noteToolError('s2', 'compress', 'not allowed 2');
+  assert.equal(turn.noteToolError('s2', 'compress', 'fetch failed: ECONNREFUSED'), null);
+  const repeated = turn.noteToolError('s2', 'compress', 'fetch failed: ECONNREFUSED');
   assert.equal(repeated?.code, 'TURN_REPEATED_TOOL_ERROR');
   assert.equal(repeated?.evidence?.count, 2);
   turn.end('s2');
@@ -67,12 +67,42 @@ try {
   turn.begin('s3');
   assert.equal(turn.noteBudgetExhausted('s3', [{ scope: 'qq' }])?.code, 'TURN_BUDGET_EXHAUSTED');
 
+  // 故障恢复后自动确认：同 dedupeKey 的未处理事件应被 ack 掉（避免"连着还弹 L2"）。
+  {
+    store.record({ gate: 'snowluma', kind: 'fault', event: 'send-channel-down', level: 'L2', dedupeKey: 'test:down' });
+    store.record({ gate: 'snowluma', kind: 'fault', event: 'send-channel-down', level: 'L2', dedupeKey: 'test:down' });
+    const before = store.list({ limit: 50, includeAcked: false }).events.filter((e) => e.dedupeKey === 'test:down');
+    assert.equal(before.length, 2, '记录两条未确认的断线事件');
+    const ids = store.ackByDedupe('test:down');
+    assert.equal(ids.length, 2, 'ackByDedupe 返回被确认的 id');
+    const after = store.list({ limit: 50, includeAcked: false }).events.filter((e) => e.dedupeKey === 'test:down');
+    assert.equal(after.length, 0, '恢复后同 dedupeKey 事件不再出现');
+  }
+
+  // 业务拒绝 vs 环境错误：前者不该停轮（2026-10-31 实测 qq_close_conversation 被拒 3 次触发 L3）
+  {
+    const guard = createTurnGuard({ maxSteps: 99, maxRepeatedErrors: 2 });
+    guard.begin('biz');
+    const reject = '收尾失败：对方最近一条不是你的消息…建议先 qq_send_message';
+    assert.equal(guard.noteToolError('biz', 'qq_close_conversation', reject), null, '业务拒绝不计数');
+    assert.equal(guard.noteToolError('biz', 'qq_close_conversation', reject), null, '业务拒绝重复也不停轮');
+    const infra = 'fetch failed: ECONNREFUSED';
+    assert.equal(guard.noteToolError('biz', 'qq_send_message', infra), null);
+    const hit = guard.noteToolError('biz', 'qq_send_message', infra);
+    assert.equal(hit?.code, 'TURN_REPEATED_TOOL_ERROR', '环境错误仍按阈值停轮');
+    guard.end('biz');
+  }
+
   // 接线契约：桥接必须真的在回合事件里接上 guard，且用 cancel-only 接口。
   const bridgeSource = fs.readFileSync(path.resolve('src/bridge.js'), 'utf8');
   const dshSource = fs.readFileSync(path.resolve('src/dsh-client.js'), 'utf8');
   assert.match(bridgeSource, /guardTurnEvent\(frame\.sessionId/, 'bridge 必须在 session/event 接 round guard');
   assert.match(bridgeSource, /api\.cancelTurn\(/, '止血必须调用 cancel-only');
   assert.match(dshSource, /async cancelTurn\(/, 'dsh-client 必须提供 cancelTurn');
+  // 断线去抖 + 恢复自动确认（2026-10-31：明明连着却弹 L2）
+  assert.match(bridgeSource, /downTimer/, 'bridge 必须给 close 加观察窗口');
+  assert.match(bridgeSource, /ackByDedupe\('snowluma:send-channel-down'\)/, '重连后必须自动确认断线事件');
+  assert.ok(!bridgeSource.includes('自动唤醒已暂停，避免先生成后丢弃'), '断线文案不能声称“已暂停”（暂停由发送失败触发）');
 
   console.log('✅ 闸门事件中心/单轮止血通过');
 } finally {

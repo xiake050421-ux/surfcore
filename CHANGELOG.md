@@ -4,6 +4,243 @@
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 发布规则见 [docs/guides/VERSIONS.md](docs/guides/VERSIONS.md)。
 
+## [0.9.0] - 2026-10-31
+
+本版 = **上游 v0.8.1（含 0.7.20–0.8.1 共 6 个版本）** + **fork 线自 0.8.0 起的功能**。
+编号跳过 0.8.2，是为了避开与上游 0.8.x 抢号：fork 的 0.8.0 与上游 0.8.0 内容不同。
+
+### 新增（fork 线，0.8.0 起）
+
+- **QQ 端 DSH 任务通道**：主人在私聊里说「帮我看看内存」，QQ 端通过 `qq_dsh_task` 交给 DSH 执行并回传结果（仅主人私聊，有互斥与超时）。
+- **每日 60 秒日报**：每天 12:00 抓「60 秒读懂世界」发到指定群，当天去重、失败退避、重试上限。
+- **桌宠权限提醒**：DSH 弹权限确认 / 提问时，surfcore 桌宠冒气泡提醒（同类 20 秒去重）。
+- **DSH 端口守护**：桥接每 60 秒核一次 DSH 端口，换端口后自动切地址并重开事件流。
+
+### 修复（fork 线，0.8.0 起）
+
+- 回合被 DSH 闸门拦掉（`blocked`）时不再静默：退役会话、重建、重投一次，并写进活动日志。
+- SnowLuma 2.x 扁平目录下「一键启动」打不开：认 `config/runtime.json` 的 `webuiPort`，不再回落 5100。
+- Token 防爆破额度默认值抬高（私聊 10 → 30 次/天），并支持运行时热更新。
+- 更新源可配置（`updates.repo`），默认仍上游；本机指向 fork。
+
+### 合入上游
+
+- v0.7.20–v0.7.23：一键启动/停止 SurfCore、白名单归一化 + 补唤醒 + 称呼归属、SnowLuma 断线告警去抖。
+- v0.8.0–v0.8.1：限制失败可见性、记忆卡手动操作、UI 区域按钮化、快照/工具面/step guard、群分层 + 人格语气、B站/桌宠语气层与身份底座。
+
+## [0.8.1] - 2026-10-31
+
+### 修复（B站 / 桌宠缺少语气层）
+
+- B站（scheduler）与桌宠（pet-chat）的提示词补上 `tone` 层：以前只有 QQ 按语气层说话，
+  另外两端还是干巴巴的人设；三端现在共用同一套 核心/语气/场景/日常。
+
+### 修复（身份底座只在部分场景出现）
+
+- 新增 `src/persona-identity.js`：统一生成「你是 X；你的主人是 Y」，QQ / B站 / 桌宠共用；
+- B站、桌宠提示词补上身份层（以前只有 QQ 有）；身份不再依赖用户是否拆分人格；
+- 身份作为独立层注入，tone / full 都带；日常层里的身份副本保留（旧角色兜底）。
+
+### 修复（未拆分人格卡在群聊只剩身份底座，人设丢失）
+
+- `composePersonaLayers`：tone 模式在**没有语气/场景/日常**（即用户还没拆分人格）时回退 full，
+  注入核心人设 + 身份底座；已拆分的仍只带语气层（省 token）。
+- 回归测试：未拆分 + 身份底座 → 核心必须出现；拆分后 tone 仍不含核心。
+
+
+## [0.8.0] - 2026-10-31
+
+### 记忆卡手动操作修复
+
+- 修复 MemoryCardPanel act 引用不存在的 item.staged；
+- toast 文案不再阻断 reload；服务端成功后界面会刷新。
+
+### 限制失败可见性
+
+- 同一限制 1 小时只提醒一次（持久化）；
+- 概览可「永久不再显示」某个限制 code。
+
+- 发送频率超限返回具体设置/当前值/上限/路径；
+- 概览错误报告展示 L1 限制提醒，可去改设置或确认本限制；
+- 鱼群/Token 发送上限也写 L1。
+
+### 会话映射审计
+
+- 启动时检测多个 QQ 会话共用同一 sessionId，删除重复映射并重建独立会话。
+- 新会话写可辨认标题（QQ 聊天 · group:...）。
+- gate event session-map-duplicate。
+
+### 群管理保存修复
+
+- group-policy POST 兼容已解析对象，修复 500。
+- 强制大群/小群选择即保存。
+
+### 设置页区域按钮化
+
+- 高级设置里的参数组改为按钮 + 弹窗编辑，弹窗内保存；
+- 群管理移入高级设置，不再占 QQ 页顶部；
+- 鱼群保护/对话收尾收成按钮；顶部卡片不变。
+
+### SnowLuma 启动告警
+
+- 未启动 SnowLuma 时不再弹“断线”L2；只有本次进程真正连过、再断开才告警；
+- `/api/status` 与 overview 带 `everConnected`，UI 据此显示。
+
+### 工具快照 / 工具面 / step guard / close 幂等
+
+- 新增 `qq_get_context_snapshot`：一次读取 unread/recent/social/activeMembers，默认 caps + truncated + refs；
+- 新增 `src/context-snapshot.js` 纯函数；
+- `qq_get_prompt` 默认只返回 role/wake/memory，stickers/slang/closure/voices 需显式 sections；
+- 新增 `socialV2.toolProfile`：full / balanced / compact；默认 balanced（关闭 snapshot 时回 full）；
+- close 在最近发送失败时返回 `CLOSE_AFTER_SEND_FAILED`，禁止假装成功后收尾；
+- preset 引导优先 `qq_get_context_snapshot`；
+- turn-guard 改为按 assistant step 计数，同一步多个 tool call 不重复计；
+- `src/action-planner.js` 第一版：close 幂等，杜绝重复收尾；
+- 新增测试：snapshot、action planner；audit 103/103。
+
+### 群分层 / 人格语气 / 智能拆分
+
+- 新增 `src/group-policy.js`：小群积极，大群/高活跃群收紧；成员数自动识别 + 手动覆盖；
+- 设置页 QQ → 群分层：人数、近10分钟消息、自动判定、强制小群/大群；面板提示人数过多/活跃会大大加快 Token 消耗；
+- 人格新增 `persona.tone.md` 语气层；群聊 `qq_get_prompt` 默认 tone，不加载核心；
+- 私聊/必要判断可 `mode=full` 显式加载核心；
+- 角色页一页四层（不再 tab），写法提示 + 保存全部；
+- 拆分只出预览草稿，空白保留原文；身份底座（我是谁/主人是谁）在 tone/full/日常都带；
+- 场景说明包含 B站等其他平台 + 跨平台隐私警告；
+- 载入人格卡后「智能拆分当前人格」：模型返回 core/tone/daily/scenes 草稿，用户编辑并逐层保存；
+- 失败路径结构化：群分层/拆分接口均带 code + hint；拆分失败自动 JSON-only 重试一次，并带输出预览。
+
+### 修复（question 触发绕过每日唤醒配额）
+
+- 新增 `src/wake-policy.js`：只有 @/名字/拍一拍/私聊/管理员算 hard direct；
+- `question` 不再绕过 `maxWakesPerDay` / 最小间隔；
+- unread 的严格 direct 只认引用自己/真实 @；裸昵称、owner、fish bypass 不再绕过每日配额；
+- 修复一小时样本中“普通群聊你…吗”被无限唤醒的问题。
+
+### 新增（A+B Token 账单 Markdown）
+
+- 每个角色包一份 `characters/<id>/summary.md`；
+- 每个 QQ 群/私聊一份 `conversations/<key>.md`；
+- 含总览、按天、唤醒原因/遥测成本、工具、交付延迟、最贵回合；
+- 插件启动 30 秒后生成、每 10 分钟刷新；不调用模型、不记录正文；
+- 群内个人成本不精确分摊，只到群/私聊。
+
+### 新增（Phase 4：调用链交付延迟/成本验收）
+
+- 调用链报告新增 `deliveredLatency`（wake 到第一次发送的 P50/P90/avg）和
+  `avgCostDelivered`（每次有发送的唤醒平均成本）；
+- 新增 `review.closeOnly` / `review.noSendByReason`，按原因看未发送分布；
+- 只读指标；**不改 reasoningEffort、不改模型、不加统一调用上限**；
+- 原因：没有成功回复/漏回复指标前，直接降思考强度可能省 token 但变笨。
+
+### 新增（Phase 3：启动补唤醒限量）
+
+- `socialV2.wake.backlogMaxSessions` 默认 **3**（原硬编码 5），范围 1~20；
+- 启动补唤醒只取未读最多的前 N 个会话，其余保留 unread 等自然唤醒；
+- 设置页高级设置可调；不合并不同会话上下文、不删消息。
+
+### 新增（Phase 1A：调用链重建，只读）
+
+- bridge 在真正投递 wake 时生成 `wakeId`，并把 QQ 会话事件写入带 `wakeId` 的遥测；
+- 新增 `scripts/context-call-chain-report.mjs`：bridge/plugin 去重，重建
+  `wake → turn/step → tool` 路径，统计 delivered/closed/成本/每 wake 模型调用数；
+- 不自动 close、不合并唤醒、不设统一调用上限；
+- 样本：48 wake，close-only 26 次，send→close 10 次，backlog 7 次 ¥0.933。
+
+### 修复（L3「同一工具和错误反复出现」被业务拒绝误触发）
+
+- `turn-guard` 新增 `isExpectedToolError()`：收尾失败 / 不能 / 请先 / 白名单 / 未授权 / 参数 /
+  格式 / 限流 / 未开启等**预期内的业务拒绝不再计入重复错误止血**；连接失败、超时等环境错误仍按阈值停轮；
+- L3 安全提醒弹窗补充 **工具 / 错误摘要 / 会话**，不再只有泛化文案。
+
+### 修复（明明连着 SnowLuma 仍弹「发送通道断开」，且每次打开设置页都弹）
+
+- `close` 加 **15 秒观察窗口**：瞬时断开（1006 抖动/启动）在窗口内重连成功就不记 L2；
+- 恢复（`open`）时 `gateEvents.ackByDedupe('snowluma:send-channel-down')` **自动确认旧告警**，
+  不再每次打开设置页都弹同一个 L2；
+- 文案从“自动唤醒已暂停”改为“通道恢复前会自动跳过主动唤醒”（暂停由连续发送失败触发）；
+- 设置页加载提醒时，若当前 SnowLuma 已连接，过滤并自动确认旧的 `send-channel-down`；
+  概览未就绪时先不弹，避免误弹一次。
+
+
+## [0.7.23] - 2026-10-31
+
+### 新增（Phase 0A：上下文/成本遥测，只测量）
+
+- 新增 `src/context-telemetry.js`：旁路记录唤醒、模型调用 usage、工具结果字符数/耗时、
+  turn 起止；只记长度/数量/错误码，不记消息正文或工具参数；
+- 插件通过 `ctx.on('session/event')` 采集所有会话；bridge 在真正投递 wake 时记录
+  prompt 总字符与分段字符；
+- 新增 `scripts/context-telemetry-report.mjs`：按唤醒原因/工具聚合基线，并标出
+  observed / estimated / 覆盖缺口；
+- 不改 prompt、工具可见性、会话策略、turn-guard 阈值；写入失败不影响主链路。
+
+### 新增（人格卡分层）
+
+- `persona.md` 保留为人格核心；新增可选 `persona.daily.md` 和
+  `persona.scenes/{qq-group,qq-private,bili,pet}.md`；
+- 组合顺序：核心→场景→日常；QQ 群聊/私聊按会话自动选场景，B站/桌宠各用各的；
+- 超总预算先裁日常、再裁场景，核心优先保留；
+- 角色页「人格卡」改为三层手动编辑，顶部醒目说明本次改动；模型不会自动改写；
+- `/persona` 支持逐层读写与按层备份恢复；快照/回档带三层；
+- 旧角色没有日常/场景文件时行为与旧版一致。
+
+
+## [0.7.22] - 2026-10-31
+
+### 修复（主人被叫成对象的称呼：称呼没有按人归属）
+
+- 新增 `src/callname.js`：按当前对话的 QQ 号从对齐表取称呼，私聊提示注入
+  「当前对话对象希望被叫「X」；不要套到别人身上」；群聊仍走身份对齐块；
+- 记忆卡：非主人的记录渲染成 `说话人（私聊/群聊）：内容`，并补规则
+  「名字/称呼只属于说这句话的人，当前对话对象看发送者 QQ 号」。
+
+### 修复（主人私信被忽略 / 重启后积压不唤醒 / 白名单被覆盖）
+
+- **白名单收敛**：新增 `src/allowlist.js`（去机器人自己、确保主人在私聊白名单、去重、丢弃非法值）；
+  桥接启动/登录/DSH 就绪时自愈并落盘 + 发 L1 事件；`/api/whitelist`、`install-apply`、
+  一键安装、设置页保存全部共用这套归一化，**不再用 `[owner]` 整体替换**；
+- **启动补唤醒**：reserved2 + DSH 就绪后 12 秒，挑允许范围内有 `unread` 且无待发定时器的会话补唤醒
+  （新 reason `backlog`，最多 5 个、按未读降序），桥接重启不再丢积压消息；
+- **token-guard**：day 拦截带 `retryAfterMs`（到本地零点），重试定时器可启动；direct（@/名字/提问/拍一拍）
+  默认豁免每日自动唤醒次数（`directBypassDay`）；桥接对 day 的重试间隔放宽到 10 分钟；
+- **日志节流**：未授权会话、token-guard 跳过日志 10 分钟只记一次，减少刷屏。
+
+
+## [0.7.21] - 2026-10-31
+
+### 新增（一键启动 SurfCore + 一键停止）
+
+- 概览启动按钮改为「一键启动 SurfCore」：多选 QQ（含 SnowLuma）/ B站 / 桌宠 / 语音；
+- 语音加本地/云端单选（voice-local / voice-cloud），未安装的选项标“未安装”；
+- 新增「一键停止（全部）」：语音→QQ→B站→桌宠；QQ 停止不关闭 SnowLuma 本体；
+- 每项独立返回 ok/code/error/hint，界面逐项显示成功/失败/建议；`overview.launch` 统一状态，
+  QQ/B站/桌宠/语音页读同一后端；
+- 空选择、平台开关关闭、桥接未运行、语音包未安装等都有结构化错误与下一步。
+
+
+## [0.7.20] - 2026-10-31
+
+### 修复（SnowLuma 断线时主动唤醒空烧 token）
+
+- `sendWakePromptV2` 最前面加 QQ 发送通道闸门：SnowLuma WS 未连接/最近发送失败 →
+  **不创建 DSH 会话、不投 prompt、不跑模型**，日志只写一次/10 分钟；
+- `sendToQQ` / `onebotSend` 记录成功/失败；连续 3 次失败 → 该会话自动唤醒暂停 30 分钟，
+  `scheduleProactiveCheckV2` 不再排下一次；
+- SnowLuma `close` 发 L2 `send-channel-down`，`open` 发 L1 恢复；首次发送失败 L1；
+- UI SnowLuma 安装卡显示断线原因和下一步；事件中心弹窗给“启动/重启 SnowLuma，
+  确认 3000/3001”的建议；
+- 未做首次 HTTP 失败预知、`wasted` 精确金额、端口/进程体检。
+
+### 修复（语音包被误放进 zip 自动更新）
+
+- 语音包（本地/云端）从 `updates.components()` 移除：它是离线运行时/模型/vendor 包，
+  不是代码 zip；通用 `updateFromZip` 的 `surfcore-*` + `package.json` + 安装清单规则必然失败；
+- 语音页新增说明：语音包不参与「检查更新」，需要新版本时用「重新导入离线包」，
+  导入保留 config.toml / .venv / models / vendor；
+- 未做语音包自动版本检查/通知；以后另做独立手动更新通道。
+
+
 ## [0.7.19] - 2026-10-30
 
 ### 新增（插件冲突体检）
